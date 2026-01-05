@@ -176,7 +176,9 @@ export function PlanningScenarioVisualizer() {
   const skipTaskResetOnScenarioChangeRef = useRef(false);
   const [suggestedEngineers, setSuggestedEngineers] = useState<SuggestedEngineer[]>([]);
   const [coreTeamDetails, setCoreTeamDetails] = useState<SuggestedEngineer[]>([]);
+  const [supportTeamDetails, setSupportTeamDetails] = useState<SuggestedEngineer[]>([]);
   const [coreTechnicianDetails, setCoreTechnicianDetails] = useState<TechnicianDetails[]>([]);
+  const [supportTechnicianDetails, setSupportTechnicianDetails] = useState<TechnicianDetails[]>([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
 
   // State for drag-and-drop - base suggested technicians list
@@ -206,6 +208,12 @@ export function PlanningScenarioVisualizer() {
   
   // Track added to support details for logging
   const [addedToSupportDetails, setAddedToSupportDetails] = useState<Map<string, { empName: string; tailNum: string; dates: string[] }>>(new Map());
+  
+  // Track removed support team members
+  const [removedSupportMembers, setRemovedSupportMembers] = useState<Set<string>>(new Set());
+  
+  // Track removed support team member details for logging
+  const [removedSupportDetails, setRemovedSupportDetails] = useState<Map<string, { empName: string; tailNum: string; dates: string[] }>>(new Map());
   
   // Committing changes state
   const [isCommitting, setIsCommitting] = useState(false);
@@ -535,44 +543,90 @@ export function PlanningScenarioVisualizer() {
   }, [selectedScenario, scenarios]);
 
   async function loadScenarios() {
-    // Load unique scenario names and their planning_date from scenario_allocations_v2_flat view
+    // Load unique scenario names from scenario_master_view
     const { data, error } = await supabase
-      .from('scenario_allocations_v2_flat')
-      .select('scenario_name, planning_date')
+      .from('scenario_master_view')
+      .select('scenario_name')
       .order('scenario_name');
 
     if (error) {
-      console.error('Error loading scenarios from scenario_allocations_v2_flat:', error);
+      console.error('Error loading scenarios from scenario_master_view:', error);
       return;
     }
 
-    // Get unique scenario names with their planning_date
-    const scenarioMap = new Map<string, string>(); // scenario_name -> planning_date
-    (data || []).forEach((row: { scenario_name: string; planning_date: string }) => {
-      if (row.scenario_name && !scenarioMap.has(row.scenario_name)) {
-        // Use the first planning_date found for each scenario
-        scenarioMap.set(row.scenario_name, row.planning_date || '2022-04-30');
+    // Get unique scenario names
+    const uniqueScenarioNames = new Set<string>();
+    (data || []).forEach((row: { scenario_name: string }) => {
+      if (row.scenario_name) {
+        uniqueScenarioNames.add(row.scenario_name);
       }
     });
 
     // Convert to PlanningScenario format
-    const allScenarios: PlanningScenario[] = Array.from(scenarioMap.entries()).map(([name, planningDate]) => ({
+    const allScenarios: PlanningScenario[] = Array.from(uniqueScenarioNames).map((name) => ({
       id: name, // Use scenario_name as the ID
       name: name,
-      created_at: new Date().toISOString(), // No created_at in the view, use current time
+      created_at: new Date().toISOString(),
       source: 'ai' as const,
-      planning_date: planningDate,
+      planning_date: '2022-04-30', // Default planning date, will be fetched from RPC when scenario is selected
     }));
 
-    console.log('Loaded scenarios from scenario_allocations_v2_flat:', allScenarios.length, allScenarios);
+    console.log('Loaded scenarios from scenario_master_view:', allScenarios.length, allScenarios);
     setScenarios(allScenarios);
-    // Don't auto-select a scenario - show all data by default
+
+    // Fetch the default active scenario from scenario_active_state table
+    const { data: activeScenarioData, error: activeError } = await supabase
+      .from('scenario_active_state')
+      .select('scenario_name')
+      .eq('isactive', true)
+      .single();
+
+    if (activeError) {
+      console.log('No active scenario found or error fetching:', activeError.message);
+    } else if (activeScenarioData?.scenario_name) {
+      // Check if the active scenario exists in our loaded scenarios
+      const activeExists = allScenarios.some(s => s.name === activeScenarioData.scenario_name);
+      if (activeExists) {
+        console.log('Auto-selecting active scenario from DB:', activeScenarioData.scenario_name);
+        setSelectedScenario(activeScenarioData.scenario_name);
+      } else {
+        console.log('Active scenario from DB not found in available scenarios:', activeScenarioData.scenario_name);
+      }
+    }
+  }
+
+  // Update scenario_active_state when user changes dropdown selection
+  async function updateActiveScenarioInDB(scenarioName: string) {
+    try {
+      // Deactivate all existing active scenarios
+      await supabase
+        .from('scenario_active_state')
+        .update({ isactive: false, updated_at: new Date().toISOString() })
+        .eq('isactive', true);
+
+      // Activate the selected scenario
+      const { error } = await supabase
+        .from('scenario_active_state')
+        .upsert({
+          scenario_name: scenarioName,
+          isactive: true,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'scenario_name' });
+
+      if (error) {
+        console.error('Error updating active scenario:', error);
+      } else {
+        console.log('Successfully updated active scenario to:', scenarioName);
+      }
+    } catch (err) {
+      console.error('Error in updateActiveScenarioInDB:', err);
+    }
   }
 
   // Commit changes to scenario_action_log table
   async function commitChangesToDatabase() {
     // Check if ANY changes exist
-    const hasChanges = removedCoreTeamDetails.size > 0 || addedToCoreDetails.size > 0 || addedToSupportDetails.size > 0;
+    const hasChanges = removedCoreTeamDetails.size > 0 || addedToCoreDetails.size > 0 || addedToSupportDetails.size > 0 || removedSupportDetails.size > 0;
     
     if (!selectedScenario || !hasChanges) {
       console.log('No changes to commit');
@@ -656,6 +710,22 @@ export function PlanningScenarioVisualizer() {
         });
       });
 
+      // REMOVED_FROM_SUPPORT records - one per date
+      Array.from(removedSupportDetails.entries()).forEach(([empId, details]) => {
+        details.dates.forEach(date => {
+          allRecords.push({
+            created_at: new Date().toISOString(),
+            scenario_name: selectedScenario,
+            tail_num: details.tailNum,
+            id: empId,
+            name: details.empName,
+            action: 'REMOVED_FROM_SUPPORT',
+            isactive: 'active',
+            assignment_date: date
+          });
+        });
+      });
+
       if (allRecords.length > 0) {
         const { error: insertError } = await supabase
           .from('scenario_action_log')
@@ -671,10 +741,14 @@ export function PlanningScenarioVisualizer() {
       // Set flag BEFORE any state changes to preserve selectedTask
       skipTaskResetOnScenarioChangeRef.current = true;
 
-      // Refresh scenarios list and get the updated list
+      // Calculate Base and displayName
+      const base = selectedScenario.replace(/_latest$/, '');
+      const latestScenarioName = `${base}_latest`;
+
+      // Refresh scenarios list from scenario_master_view
       const { data: freshScenarios, error: scenarioError } = await supabase
-        .from('scenario_allocations_v2_flat')
-        .select('scenario_name, planning_date')
+        .from('scenario_master_view')
+        .select('scenario_name')
         .order('scenario_name');
 
       if (scenarioError) {
@@ -682,44 +756,55 @@ export function PlanningScenarioVisualizer() {
       }
 
       // Build unique scenarios from fresh data
-      const uniqueScenarios = new Map<string, PlanningScenario>();
+      const uniqueScenarioNames = new Set<string>();
       (freshScenarios || []).forEach((row: any) => {
-        if (!uniqueScenarios.has(row.scenario_name)) {
-          uniqueScenarios.set(row.scenario_name, {
-            id: row.scenario_name,
-            name: row.scenario_name,
-            created_at: new Date().toISOString(),
-            source: 'ai' as const,
-            planning_date: row.planning_date || '2022-04-30'
-          });
+        if (row.scenario_name) {
+          uniqueScenarioNames.add(row.scenario_name);
         }
       });
-      const scenariosList = Array.from(uniqueScenarios.values());
+      const scenariosList: PlanningScenario[] = Array.from(uniqueScenarioNames).map((name) => ({
+        id: name,
+        name: name,
+        created_at: new Date().toISOString(),
+        source: 'ai' as const,
+        planning_date: '2022-04-30'
+      }));
       setScenarios(scenariosList);
       console.log('Fresh scenarios loaded:', scenariosList.length);
 
-      // Check for '-active' scenario in FRESH data
-      const activeScenarioName = `${selectedScenario}-active`;
-      const activeScenario = scenariosList.find(s => s.name === activeScenarioName);
+      // Check for '_latest' scenario in FRESH data
+      const latestScenario = scenariosList.find(s => s.name === latestScenarioName);
       
-      // Clear tracking states FIRST
+      // Clear tracking states FIRST (clear local pending changes)
       setRemovedCoreTeamMembers(new Set());
       setRemovedCoreTeamDetails(new Map());
       setAddedToCoreDetails(new Map());
       setAddedToSupportDetails(new Map());
+      setRemovedSupportMembers(new Set());
+      setRemovedSupportDetails(new Map());
       setUiDateAssignments(new Map());
       setUiRosterOverrides(new Map());
 
       // Force reload scenario data
-      // If active scenario exists, switch to it; otherwise reload current scenario
-      if (activeScenario) {
-        console.log('Switching to active scenario:', activeScenarioName);
+      // If _latest scenario exists, switch to it; otherwise reload with base scenario
+      if (latestScenario) {
         skipTaskResetOnScenarioChangeRef.current = true;
-        setSelectedScenario(activeScenarioName);
+        setSelectedScenario(latestScenarioName);
+        // Update active scenario in DB
+        await updateActiveScenarioInDB(latestScenarioName);
       } else {
-        // Force reload current scenario by calling handleScenarioSelection directly
-        console.log('Reloading current scenario:', selectedScenario);
-        await handleScenarioSelection(selectedScenario);
+        // Try to load with base scenario name
+        const baseScenario = scenariosList.find(s => s.name === base);
+        if (baseScenario) {
+          console.log('Switching to base scenario:', base);
+          skipTaskResetOnScenarioChangeRef.current = true;
+          setSelectedScenario(base);
+          await updateActiveScenarioInDB(base);
+        } else {
+          // Force reload current scenario by calling handleScenarioSelection directly
+          console.log('Reloading current scenario:', selectedScenario);
+          await handleScenarioSelection(selectedScenario);
+        }
       }
 
       alert('Changes committed successfully!');
@@ -1486,6 +1571,33 @@ export function PlanningScenarioVisualizer() {
     return result;
   }, [selectedTask, scenarioRosterData]);
 
+  // Extract support team members for the selected tail from scenario roster data
+  const supportTeamForSelectedTail = useMemo(() => {
+    if (!selectedTask || !scenarioRosterData.scenarioName || scenarioRosterData.rows.length === 0) {
+      return [];
+    }
+
+    // Find unique employees who have this tail as their support assignment
+    const supportEmployees = new Map<string, { empId: string; empName: string; title: string; team: string }>();
+
+    scenarioRosterData.rows.forEach(row => {
+      // Check if employee's support assignment matches the selected tail
+      if (row.planned_support === selectedTask) {
+        if (!supportEmployees.has(row.id)) {
+          supportEmployees.set(row.id, {
+            empId: row.id,
+            empName: row.name,
+            title: row.title || 'ENGR',
+            team: row.team || '',
+          });
+        }
+      }
+    });
+
+    const result = Array.from(supportEmployees.values());
+    return result;
+  }, [selectedTask, scenarioRosterData]);
+
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) {
       return { matchingEngineers: new Set<string>(), matchingTails: new Set<string>(), isEngineerSearch: false };
@@ -2146,6 +2258,8 @@ export function PlanningScenarioVisualizer() {
       setRemovedCoreTeamDetails(new Map());
       setAddedToCoreDetails(new Map());
       setAddedToSupportDetails(new Map());
+      setRemovedSupportMembers(new Set());
+      setRemovedSupportDetails(new Map());
       return;
     }
 
@@ -2156,6 +2270,8 @@ export function PlanningScenarioVisualizer() {
     setRemovedCoreTeamDetails(new Map());
     setAddedToCoreDetails(new Map());
     setAddedToSupportDetails(new Map());
+    setRemovedSupportMembers(new Set());
+    setRemovedSupportDetails(new Map());
     
     async function loadTailData() {
       setIsLoadingSuggestions(true);
@@ -2204,15 +2320,47 @@ export function PlanningScenarioVisualizer() {
           setCoreTechnicianDetails([]);
         }
 
-        // Fetch suggested engineers (excluding core team members)
+        // Separate support team into engineers and technicians
+        const supportEngineers = supportTeamForSelectedTail.filter(e =>
+          e.title === 'ENGR' || e.title === 'CC' || e.title === 'Engineer'
+        );
+        const supportTechnicians = supportTeamForSelectedTail.filter(e =>
+          e.title === 'Technician' || e.title === 'TECH' || (!['ENGR', 'CC', 'Engineer'].includes(e.title))
+        );
+
+        const supportEngineerEmpIds = supportEngineers.map(e => e.empId);
+        const supportTechnicianEmpIds = supportTechnicians.map(e => e.empId);
+
+        // Fetch full details for support engineers
+        if (supportEngineerEmpIds.length > 0) {
+          const supportDetails = await fetchEmployeeDetails(supportEngineerEmpIds);
+          setSupportTeamDetails(supportDetails);
+        } else {
+          setSupportTeamDetails([]);
+        }
+
+        // Fetch full details for support technicians
+        if (supportTechnicianEmpIds.length > 0) {
+          const supportTechDetails = await fetchTechnicianDetails(supportTechnicianEmpIds);
+          setSupportTechnicianDetails(supportTechDetails);
+        } else {
+          setSupportTechnicianDetails([]);
+        }
+
+        // Combine core and support team names to exclude from suggestions
+        const allAssignedNames = [...coreTeamForSelectedTail.map(e => e.empName), ...supportTeamForSelectedTail.map(e => e.empName)];
+        const allAssignedEngineerIds = [...coreEngineerEmpIds, ...supportEngineerEmpIds];
+        const allAssignedTechIds = [...coreTechnicianEmpIds, ...supportTechnicianEmpIds];
+
+        // Fetch suggested engineers (excluding core AND support team members)
         // First get RPC suggestions based on tail history
-        const rpcEngineers = await fetchSuggestedEngineers(tailNum, coreTeamNames);
+        const rpcEngineers = await fetchSuggestedEngineers(tailNum, allAssignedNames);
         console.log('RPC suggested engineers:', rpcEngineers);
 
         // Also get available engineers from roster who are not assigned elsewhere
         const checkDate = selectedDate || displayDates[0] || '';
         const rpcEngineerIds = rpcEngineers.map(e => e.empId);
-        const excludeEngineerIds = [...coreEngineerEmpIds, ...rpcEngineerIds];
+        const excludeEngineerIds = [...allAssignedEngineerIds, ...rpcEngineerIds];
 
         const rosterEngineers = await findAvailableEngineersFromRoster(checkDate, excludeEngineerIds, tailNum);
         console.log('Roster available engineers:', rosterEngineers);
@@ -2221,7 +2369,7 @@ export function PlanningScenarioVisualizer() {
         const allSuggestedEngineers = [...rpcEngineers, ...rosterEngineers];
         // Remove duplicates by empId
         const uniqueSuggestedEngineers = allSuggestedEngineers.filter((eng, index, self) =>
-          index === self.findIndex(e => e.empId === eng.empId)
+          index === self.findIndex(e => e.empId === eng.empId) && !allAssignedEngineerIds.includes(eng.empId)
         );
         console.log('Final suggested engineers:', uniqueSuggestedEngineers);
         setSuggestedEngineers(uniqueSuggestedEngineers);
@@ -2233,9 +2381,9 @@ export function PlanningScenarioVisualizer() {
         if (coreTechNames.length > 0) {
           const suggestedTechs = await fetchSuggestedTechnicians(coreTechNames);
           console.log('Raw suggested technicians from RPC:', suggestedTechs);
-          // Filter out technicians who are already in the core team
+          // Filter out technicians who are already in the core or support team
           rpcSuggestedTechs = suggestedTechs.filter(
-            st => !coreTechnicianEmpIds.includes(st.empId)
+            st => !allAssignedTechIds.includes(st.empId)
           );
           // Filter out technicians who are on leave/off on selected date
           rpcSuggestedTechs = await filterAvailableTechnicians(rpcSuggestedTechs, checkDate);
@@ -2244,7 +2392,7 @@ export function PlanningScenarioVisualizer() {
 
         // Also get available technicians from roster who are not assigned elsewhere
         const rpcTechIds = rpcSuggestedTechs.map(t => t.empId);
-        const excludeTechIds = [...coreTechnicianEmpIds, ...rpcTechIds];
+        const excludeTechIds = [...allAssignedTechIds, ...rpcTechIds];
 
         const rosterTechnicians = await findAvailableTechniciansFromRoster(checkDate, excludeTechIds, tailNum);
         console.log('Roster available technicians:', rosterTechnicians);
@@ -2265,7 +2413,7 @@ export function PlanningScenarioVisualizer() {
     }
 
     loadTailData();
-  }, [selectedTask, scenarioRosterData.scenarioName, coreTeamForSelectedTail, selectedDate, displayDates]);
+  }, [selectedTask, scenarioRosterData.scenarioName, coreTeamForSelectedTail, supportTeamForSelectedTail, selectedDate, displayDates]);
 
   // Derive bay allocations from scenario roster data when a scenario is selected
   // The RPC returns bay and tail_num for each row, we need to group by bay and tail
@@ -3345,7 +3493,14 @@ export function PlanningScenarioVisualizer() {
           <label className="block text-sm font-medium mb-2">Select Scenario:</label>
           <select
             value={selectedScenario}
-            onChange={(e) => setSelectedScenario(e.target.value)}
+            onChange={(e) => {
+              const newScenario = e.target.value;
+              setSelectedScenario(newScenario);
+              // Update active scenario in DB when user changes selection
+              if (newScenario) {
+                updateActiveScenarioInDB(newScenario);
+              }
+            }}
             className="w-full px-3 py-2 border-2 border-gray-300 rounded"
           >
             <option value="">-- Select a scenario --</option>
@@ -3749,17 +3904,67 @@ export function PlanningScenarioVisualizer() {
               )}
               <div className="font-semibold text-blue-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
-                Support Engineers ({displaySupportEngineers.length})
+                Support Engineers ({supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length + displaySupportEngineers.length})
               </div>
-              {displaySupportEngineers.length > 0 ? (
+              {(supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length > 0 || displaySupportEngineers.length > 0) ? (
                 <div className="flex flex-wrap gap-2">
+                  {/* Existing support team members from database */}
+                  {supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).map(member => (
+                    <div
+                      key={member.empId}
+                      className="relative group"
+                      onMouseEnter={() => setHoveredCard(`support-eng-db-${member.empId}`)}
+                      onMouseLeave={() => setHoveredCard(null)}
+                    >
+                      <div className="border-2 border-blue-400 bg-blue-50 rounded px-3 py-2 pr-6 cursor-default relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Get dates for removal - use selectedBayDates if available, else selectedDate or all visible dates
+                            const datesToRemove: string[] = selectedBayDates.size > 0 
+                              ? Array.from(selectedBayDates) 
+                              : (selectedDate ? [selectedDate] : displayDates);
+                            // Track the removed member details for logging
+                            setRemovedSupportDetails(prev => {
+                              const newMap = new Map(prev);
+                              const existing = newMap.get(member.empId);
+                              const allDates = existing ? [...new Set([...existing.dates, ...datesToRemove])] : datesToRemove;
+                              newMap.set(member.empId, { empName: member.empName, tailNum: selectedTask || '', dates: allDates });
+                              return newMap;
+                            });
+                            setRemovedSupportMembers(prev => new Set([...prev, member.empId]));
+                          }}
+                          className="absolute top-1 right-1 w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center z-10"
+                          title="Remove from Support Team"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                        <div className="font-semibold text-sm text-gray-900">{member.empName}</div>
+                        <div className="text-xs text-gray-500">{member.title} | {member.team || 'N/A'}</div>
+                      </div>
+                      {hoveredCard === `support-eng-db-${member.empId}` && (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-56 border-2 border-blue-500 bg-white rounded-lg shadow-xl p-3">
+                          <div className="font-bold text-sm text-gray-900 mb-2">{member.empName}</div>
+                          <div className="space-y-1 text-xs text-gray-600">
+                            <div><span className="font-medium">Title:</span> {member.title}</div>
+                            <div><span className="font-medium">Team:</span> {member.team || 'N/A'}</div>
+                            <div><span className="font-medium">Exp:</span> {member.yearsOfExperience} yrs</div>
+                            <div><span className="font-medium">Aircraft:</span> {member.mostWorkedAircraft || 'N/A'}</div>
+                            <div><span className="font-medium">Licenses:</span> {member.licenseCount}</div>
+                            <div><span className="font-medium">Leave Balance:</span> {member.totalLeaveBalance} days</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {/* UI-added support engineers for this date */}
                   {displaySupportEngineers.map(engineer => (
                     <div
                       key={engineer.empId}
                       draggable={true}
                       onDragStart={(e) => {
                         e.stopPropagation();
-                        console.log('Core Support Engineer DragStart:', engineer.empName);
+                        console.log('UI Support Engineer DragStart:', engineer.empName);
                         setHoveredCard(null);
                         const item = { type: 'engineer' as const, data: engineer, source: 'support' };
                         setDraggedItem(item);
@@ -3768,18 +3973,18 @@ export function PlanningScenarioVisualizer() {
                       }}
                       onDragEnd={(e) => {
                         e.stopPropagation();
-                        console.log('Core Support Engineer DragEnd, activeDropZone:', activeDropZone);
+                        console.log('UI Support Engineer DragEnd, activeDropZone:', activeDropZone);
                         handleDragEnd(draggedItem);
                       }}
                       className="relative group cursor-grab active:cursor-grabbing select-none"
-                      onMouseEnter={() => setHoveredCard(`support-eng-${engineer.empId}`)}
+                      onMouseEnter={() => setHoveredCard(`support-eng-ui-${engineer.empId}`)}
                       onMouseLeave={() => setHoveredCard(null)}
                     >
-                      <div className="border-2 border-blue-400 bg-blue-50 rounded px-3 py-2 pointer-events-none">
+                      <div className="border-2 border-blue-600 bg-blue-100 rounded px-3 py-2 pointer-events-none">
                         <div className="font-semibold text-sm text-gray-900">{engineer.empName}</div>
                         <div className="text-xs text-gray-500">{engineer.title} | {engineer.team || 'N/A'}</div>
                       </div>
-                      {hoveredCard === `support-eng-${engineer.empId}` && (
+                      {hoveredCard === `support-eng-ui-${engineer.empId}` && (
                         <div className="absolute z-50 left-0 top-full mt-1 w-56 border-2 border-blue-500 bg-white rounded-lg shadow-xl p-3">
                           <div className="font-bold text-sm text-gray-900 mb-2">{engineer.empName}</div>
                           <div className="space-y-1 text-xs text-gray-600">
@@ -4292,30 +4497,16 @@ export function PlanningScenarioVisualizer() {
               )}
               <div className="font-semibold text-green-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
-                Support Technicians ({displaySupportTechnicians.length})
+                Support Technicians ({supportTechnicianDetails.filter(t => !removedSupportMembers.has(t.empId)).length + displaySupportTechnicians.length})
               </div>
-              {displaySupportTechnicians.length > 0 ? (
+              {(supportTechnicianDetails.filter(t => !removedSupportMembers.has(t.empId)).length > 0 || displaySupportTechnicians.length > 0) ? (
                 <div className="flex flex-wrap gap-2">
-                  {displaySupportTechnicians.map(tech => (
+                  {/* Existing support technicians from database */}
+                  {supportTechnicianDetails.filter(t => !removedSupportMembers.has(t.empId)).map(tech => (
                     <div
                       key={tech.empId}
-                      draggable={true}
-                      onDragStart={(e) => {
-                        e.stopPropagation();
-                        console.log('Core Support Technician DragStart:', tech.empName);
-                        setHoveredCard(null);
-                        const item = { type: 'technician' as const, data: tech, source: 'support' };
-                        setDraggedItem(item);
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'technician', source: 'support', id: tech.empId }));
-                      }}
-                      onDragEnd={(e) => {
-                        e.stopPropagation();
-                        console.log('Core Support Technician DragEnd, activeDropZone:', activeDropZone);
-                        handleDragEnd(draggedItem);
-                      }}
-                      className="relative group cursor-grab active:cursor-grabbing select-none"
-                      onMouseEnter={() => setHoveredCard(`support-tech-${tech.empId}`)}
+                      className="relative group"
+                      onMouseEnter={() => setHoveredCard(`support-tech-db-${tech.empId}`)}
                       onMouseLeave={() => setHoveredCard(null)}
                       onClick={(e) => {
                         if (!draggedItem) {
@@ -4324,11 +4515,79 @@ export function PlanningScenarioVisualizer() {
                         }
                       }}
                     >
-                      <div className="border-2 border-green-400 bg-green-50 rounded px-3 py-2 pointer-events-none">
+                      <div className="border-2 border-green-400 bg-green-50 rounded px-3 py-2 pr-6 cursor-default relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Get dates for removal - use selectedBayDates if available, else selectedDate or all visible dates
+                            const datesToRemove: string[] = selectedBayDates.size > 0 
+                              ? Array.from(selectedBayDates) 
+                              : (selectedDate ? [selectedDate] : displayDates);
+                            // Track the removed member details for logging
+                            setRemovedSupportDetails(prev => {
+                              const newMap = new Map(prev);
+                              const existing = newMap.get(tech.empId);
+                              const allDates = existing ? [...new Set([...existing.dates, ...datesToRemove])] : datesToRemove;
+                              newMap.set(tech.empId, { empName: tech.empName, tailNum: selectedTask || '', dates: allDates });
+                              return newMap;
+                            });
+                            setRemovedSupportMembers(prev => new Set([...prev, tech.empId]));
+                          }}
+                          className="absolute top-1 right-1 w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center z-10"
+                          title="Remove from Support Team"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
                         <div className="font-semibold text-sm text-gray-900">{tech.empName}</div>
                         <div className="text-xs text-gray-500">{tech.title} | {tech.team || 'N/A'}</div>
                       </div>
-                      {hoveredCard === `support-tech-${tech.empId}` && (
+                      {hoveredCard === `support-tech-db-${tech.empId}` && (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-48 border-2 border-green-500 bg-white rounded-lg shadow-xl p-3">
+                          <div className="font-bold text-sm text-gray-900 mb-2">{tech.empName}</div>
+                          <div className="space-y-1 text-xs text-gray-600">
+                            <div><span className="font-medium">Title:</span> {tech.title}</div>
+                            <div><span className="font-medium">Team:</span> {tech.team || 'N/A'}</div>
+                            <div><span className="font-medium">Aircraft:</span> {tech.aircraft || 'N/A'}</div>
+                            <div><span className="font-medium">Engine:</span> {tech.engine || 'N/A'}</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {/* UI-added support technicians for this date (draggable back to suggested) */}
+                  {displaySupportTechnicians.map(tech => (
+                    <div
+                      key={tech.empId}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        console.log('UI Support Technician DragStart:', tech.empName);
+                        setHoveredCard(null);
+                        const item = { type: 'technician' as const, data: tech, source: 'support' };
+                        setDraggedItem(item);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'technician', source: 'support', id: tech.empId }));
+                      }}
+                      onDragEnd={(e) => {
+                        e.stopPropagation();
+                        console.log('UI Support Technician DragEnd, activeDropZone:', activeDropZone);
+                        handleDragEnd(draggedItem);
+                      }}
+                      className="relative group cursor-grab active:cursor-grabbing select-none"
+                      onMouseEnter={() => setHoveredCard(`support-tech-ui-${tech.empId}`)}
+                      onMouseLeave={() => setHoveredCard(null)}
+                      onClick={(e) => {
+                        if (!draggedItem) {
+                          e.stopPropagation();
+                          handleTechnicianClick(tech);
+                        }
+                      }}
+                    >
+                      <div className="border-2 border-green-600 bg-green-100 rounded px-3 py-2 pointer-events-none">
+                        <div className="font-semibold text-sm text-gray-900">{tech.empName}</div>
+                        <div className="text-xs text-gray-500">{tech.title} | {tech.team || 'N/A'}</div>
+                      </div>
+                      {hoveredCard === `support-tech-ui-${tech.empId}` && (
                         <div className="absolute z-50 left-0 top-full mt-1 w-48 border-2 border-green-500 bg-white rounded-lg shadow-xl p-3">
                           <div className="font-bold text-sm text-gray-900 mb-2">{tech.empName}</div>
                           <div className="space-y-1 text-xs text-gray-600">
@@ -4594,7 +4853,7 @@ export function PlanningScenarioVisualizer() {
             </div>
             <div>
               {(() => {
-                const hasChanges = uiDateAssignments.size > 0 || uiRosterOverrides.size > 0 || removedCoreTeamMembers.size > 0 || addedToCoreDetails.size > 0 || addedToSupportDetails.size > 0;
+                const hasChanges = uiDateAssignments.size > 0 || uiRosterOverrides.size > 0 || removedCoreTeamMembers.size > 0 || addedToCoreDetails.size > 0 || addedToSupportDetails.size > 0 || removedSupportMembers.size > 0 || removedSupportDetails.size > 0;
                 return (
                   <button 
                     className={`px-4 py-2 rounded-md transition-colors ${
