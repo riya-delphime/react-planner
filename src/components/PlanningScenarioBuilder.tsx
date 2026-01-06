@@ -467,14 +467,14 @@ export function PlanningScenarioBuilder() {
     }
   }, [aircraftSchedules, additionalAircraft]);
 
-  // Load data from get_visit_planning_details RPC function
+  // Load data from get_visit_planning_status_for_active_scenario RPC function
   async function loadVisitPlanningData() {
     setIsLoading(true);
     try {
-      // Call RPC function: get_visit_planning_details('2022-04-30')
+      // Call RPC function: get_visit_planning_status_for_active_scenario('2022-04-30')
       const planningDate = '2022-04-30';
       const { data, error } = await supabase
-        .rpc('get_visit_planning_details', { p_date: planningDate });
+        .rpc('get_visit_planning_status_for_active_scenario', { p_ref_date: planningDate });
 
       if (error) {
         const { data: fallbackData, error: fallbackError } = await supabase
@@ -493,6 +493,17 @@ export function PlanningScenarioBuilder() {
           const licReq = (visit.aircraft && visit.engine && visit.lic_req) 
             ? `${visit.aircraft}-${visit.engine}-${visit.lic_req}` 
             : undefined;
+          
+          // Determine status_category from visit.status
+          const statusCategory = visit.status as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated';
+          
+          // Derive planning_status from status_category if not provided
+          const derivedPlanningStatus = visit.planning_status || 
+            (statusCategory === 'Ongoing' ? 'ongoing' : 
+             statusCategory === 'Upcoming' ? 'planned' : 
+             statusCategory === 'Completed' ? 'completed' : 
+             statusCategory === 'Simulated' ? 'simulated' : undefined);
+          
           return {
             id: `visit-${visit.visit_id}`,
             visit_id: visit.visit_id,
@@ -504,10 +515,10 @@ export function PlanningScenarioBuilder() {
             ets_date: visit.ets_date || '',
             min_engineers: visit.min_engineers || 0,
             min_technicians: visit.min_technicians || 0,
-            status_category: visit.status as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated',
+            status_category: statusCategory,
             is_from_db: true,
             lic_req: licReq, // Include license requirement for allocation
-            planning_status: visit.planning_status || undefined,
+            planning_status: derivedPlanningStatus, // Planning status derived from status_category
           };
         });
         setAircraftSchedules(schedules);
@@ -522,27 +533,51 @@ export function PlanningScenarioBuilder() {
       }
 
       // Convert RPC response to AircraftSchedule format
-      // RPC returns: tail_num, customer, aircraft_plate, check, start_date, end_date, departs_res, status, planning_status
+      // RPC returns: tail_num, customer, aircraft_clean, check_type, start_date, end_date, min_engineers, min_technicians, status, planning_status
       const schedules: AircraftSchedule[] = data.map((visit: any) => {
+        // Get aircraft type from aircraft_clean (e.g., "B777-300") or aircraft field
+        const aircraftType = visit.aircraft_clean || visit.aircraft || visit.aircraft_plate || '';
+        
         // Build lic_req from aircraft-engine-lic_req if available
+        // Note: RPC may not return engine and lic_req separately, so this may be undefined
         const licReq = (visit.aircraft && visit.engine && visit.lic_req) 
           ? `${visit.aircraft}-${visit.engine}-${visit.lic_req}` 
           : undefined;
+        
+        // Determine status_category from visit.status
+        // RPC returns lowercase status (e.g., "ongoing", "upcoming")
+        // Convert to proper case for status_category
+        const statusLower = (visit.status || '').toLowerCase();
+        const statusCategory = (
+          statusLower === 'ongoing' ? 'Ongoing' :
+          statusLower === 'upcoming' ? 'Upcoming' :
+          statusLower === 'completed' ? 'Completed' :
+          statusLower === 'simulated' ? 'Simulated' :
+          visit.status || 'Upcoming'
+        ) as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated';
+        
+        // Use planning_status directly from RPC if available, otherwise derive from status_category
+        const derivedPlanningStatus = visit.planning_status || 
+          (statusCategory === 'Ongoing' ? 'ongoing' : 
+           statusCategory === 'Upcoming' ? 'planned' : 
+           statusCategory === 'Completed' ? 'completed' : 
+           statusCategory === 'Simulated' ? 'simulated' : undefined);
+        
         return {
           id: `visit-${visit.visit_id || visit.tail_num}`,
           visit_id: visit.visit_id || '',
           aircraft_reg: visit.tail_num || '',
           customer: visit.customer || '',
-          fleet: visit.aircraft || visit.aircraft_plate || '',
+          fleet: aircraftType,
           check_type: visit.check_type || visit.check || '',
           induct_date: visit.start_date || visit.induction_date || '',
           ets_date: visit.end_date || visit.ets_date || '',
           min_engineers: visit.min_engineers || 0,
           min_technicians: visit.min_technicians || 0,
-          status_category: visit.status as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated',
+          status_category: statusCategory,
           is_from_db: true,
           lic_req: licReq,
-          planning_status: visit.planning_status || undefined, // Planning status from RPC
+          planning_status: derivedPlanningStatus, // Planning status from RPC or derived from status_category
         };
       });
 
@@ -566,6 +601,7 @@ export function PlanningScenarioBuilder() {
       setAircraftSchedules(schedules);
 
       // Extract unique map_key options (aircraft-engine-lic combinations)
+      // First try from RPC response, then fallback to loading from visit_planning_canonical
       const mapKeys = new Map<string, MapKeyOption>();
       data.forEach((visit: any) => {
         if (visit.aircraft && visit.engine && visit.lic_req) {
@@ -580,6 +616,42 @@ export function PlanningScenarioBuilder() {
           }
         }
       });
+
+      // If no map_key options found from RPC, load from emp_lic table (employee licenses)
+      // emp_lic has: aircraft, engine, lic, map_key columns
+      if (mapKeys.size === 0) {
+        console.log('No map_key options from RPC, loading from emp_lic table...');
+        const { data: licenseData, error: licError } = await supabase
+          .from('emp_lic')
+          .select('aircraft, engine, lic, map_key')
+          .not('aircraft', 'is', null)
+          .not('engine', 'is', null)
+          .not('lic', 'is', null);
+
+        if (licError) {
+          console.error('Error loading from emp_lic:', licError);
+        }
+
+        if (licenseData) {
+          console.log(`Found ${licenseData.length} license records from emp_lic`);
+          licenseData.forEach((license: any) => {
+            if (license.aircraft && license.engine && license.lic) {
+              // Use map_key if available, otherwise construct it
+              const mapKey = license.map_key || `${license.aircraft}-${license.engine}-${license.lic}`;
+              if (!mapKeys.has(mapKey)) {
+                mapKeys.set(mapKey, {
+                  map_key: mapKey,
+                  aircraft: license.aircraft,
+                  engine: license.engine,
+                  lic_req: license.lic,
+                });
+              }
+            }
+          });
+          console.log(`Created ${mapKeys.size} unique map_key options`);
+        }
+      }
+
       setMapKeyOptions(Array.from(mapKeys.values()));
 
     } catch (err) {
