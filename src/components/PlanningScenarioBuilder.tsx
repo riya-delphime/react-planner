@@ -16,10 +16,11 @@ interface AircraftSchedule {
   ets_date: string;
   min_engineers: number;
   min_technicians: number;
-  status_category: 'Ongoing' | 'Upcoming' | 'Completed';
+  status_category: 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated';
   is_from_db: boolean;
   lic_req?: string; // License authority only (e.g., "GCAA", "EASA", "FAA")
   full_lic_req?: string; // Full license requirement for API allocation (e.g., "A320-CFM56-GCAA")
+  planning_status?: string; // Planning status from RPC (e.g., "planned", "ongoing", "completed")
 }
 
 interface AdditionalAircraft {
@@ -86,8 +87,12 @@ export function PlanningScenarioBuilder() {
   const [selectedScenarioId, setSelectedScenarioId] = useState<string>('new');
   const [isLoading, setIsLoading] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  
+  // Active scenario state (from scenario_active_state table)
+  const [activeScenarioName, setActiveScenarioName] = useState<string>('');
 
   useEffect(() => {
+    loadActiveScenarioName();
     loadSavedScenarios();
     loadVisitPlanningData();
   }, []);
@@ -109,6 +114,31 @@ export function PlanningScenarioBuilder() {
       setHasUnsavedChanges(true);
     }
   }, [aircraftSchedules, additionalAircraft, daywisePlans]);
+
+  // Load active scenario name from scenario_active_state table
+  async function loadActiveScenarioName() {
+    try {
+      const { data, error } = await supabase
+        .from('scenario_active_state')
+        .select('scenario_name')
+        .eq('isactive', true)
+        .single();
+
+      if (error) {
+        console.log('No active scenario found or error:', error.message);
+        setActiveScenarioName('');
+        return;
+      }
+
+      if (data && data.scenario_name) {
+        setActiveScenarioName(data.scenario_name);
+        console.log('Active scenario loaded:', data.scenario_name);
+      }
+    } catch (err) {
+      console.error('Exception loading active scenario:', err);
+      setActiveScenarioName('');
+    }
+  }
 
   async function loadSavedScenarios() {
     // Load from AI allocation scenarios table
@@ -188,6 +218,7 @@ export function PlanningScenarioBuilder() {
             status_category: s.status_category || (s.is_ongoing ? 'Ongoing' : 'Upcoming'),
             is_from_db: false,
             lic_req: s.lic_req || undefined,
+            planning_status: s.planning_status || undefined,
           }));
           setAircraftSchedules(loadedSchedules);
 
@@ -241,6 +272,7 @@ export function PlanningScenarioBuilder() {
             status_category: s.status_category || (s.is_ongoing ? 'Ongoing' : 'Upcoming'),
             is_from_db: false,
             lic_req: s.lic_req || undefined,
+            planning_status: s.planning_status || undefined,
           }));
           setAircraftSchedules(loadedSchedules);
 
@@ -296,6 +328,7 @@ export function PlanningScenarioBuilder() {
         status_category: schedule.status_category,
         is_from_db: schedule.is_from_db,
         lic_req: schedule.lic_req,
+        planning_status: schedule.planning_status,
       }));
 
       const additionalAircraftJson = additionalAircraft.map(aircraft => ({
@@ -434,50 +467,86 @@ export function PlanningScenarioBuilder() {
     }
   }, [aircraftSchedules, additionalAircraft]);
 
-  // Load data from visit_planning_combined view
+  // Load data from get_visit_planning_details RPC function
   async function loadVisitPlanningData() {
     setIsLoading(true);
     try {
+      // Call RPC function: get_visit_planning_details('2022-04-30')
+      const planningDate = '2022-04-30';
       const { data, error } = await supabase
-        .from('visit_planning_combined')
-        .select('*')
-        .order('induction_date', { ascending: true });
+        .rpc('get_visit_planning_details', { p_date: planningDate });
 
       if (error) {
-        console.error('Error loading visit planning data:', error);
-        return;
-      }
-
-      if (!data || data.length === 0) {
-        console.log('No visit planning data found');
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('visit_planning_combined')
+          .select('*')
+          .order('induction_date', { ascending: true });
+        
+        if (fallbackError || !fallbackData || fallbackData.length === 0) {
+          console.log('No visit planning data found');
+          setIsLoading(false);
+          return;
+        }
+        
+        // Use fallback data
+        const schedules: AircraftSchedule[] = fallbackData.map((visit: any) => {
+          const licReq = (visit.aircraft && visit.engine && visit.lic_req) 
+            ? `${visit.aircraft}-${visit.engine}-${visit.lic_req}` 
+            : undefined;
+          return {
+            id: `visit-${visit.visit_id}`,
+            visit_id: visit.visit_id,
+            aircraft_reg: visit.tail_num || '',
+            customer: visit.customer || '',
+            fleet: visit.aircraft || '',
+            check_type: visit.check_type || '',
+            induct_date: visit.induction_date || '',
+            ets_date: visit.ets_date || '',
+            min_engineers: visit.min_engineers || 0,
+            min_technicians: visit.min_technicians || 0,
+            status_category: visit.status as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated',
+            is_from_db: true,
+            lic_req: licReq, // Include license requirement for allocation
+            planning_status: visit.planning_status || undefined,
+          };
+        });
+        setAircraftSchedules(schedules);
         setIsLoading(false);
         return;
       }
 
-      // Convert to AircraftSchedule format and segregate by status
+      if (!data || data.length === 0) {
+        console.log('No visit planning data found from RPC');
+        setIsLoading(false);
+        return;
+      }
+
+      // Convert RPC response to AircraftSchedule format
+      // RPC returns: tail_num, customer, aircraft_plate, check, start_date, end_date, departs_res, status, planning_status
       const schedules: AircraftSchedule[] = data.map((visit: any) => {
         // Build lic_req from aircraft-engine-lic_req if available
         const licReq = (visit.aircraft && visit.engine && visit.lic_req) 
           ? `${visit.aircraft}-${visit.engine}-${visit.lic_req}` 
           : undefined;
         return {
-          id: `visit-${visit.visit_id}`,
-          visit_id: visit.visit_id,
+          id: `visit-${visit.visit_id || visit.tail_num}`,
+          visit_id: visit.visit_id || '',
           aircraft_reg: visit.tail_num || '',
           customer: visit.customer || '',
-          fleet: visit.aircraft || '',
-          check_type: visit.check_type || '',
-          induct_date: visit.induction_date || '',
-          ets_date: visit.ets_date || '',
+          fleet: visit.aircraft || visit.aircraft_plate || '',
+          check_type: visit.check_type || visit.check || '',
+          induct_date: visit.start_date || visit.induction_date || '',
+          ets_date: visit.end_date || visit.ets_date || '',
           min_engineers: visit.min_engineers || 0,
           min_technicians: visit.min_technicians || 0,
-          status_category: visit.status as 'Ongoing' | 'Upcoming' | 'Completed',
+          status_category: visit.status as 'Ongoing' | 'Upcoming' | 'Completed' | 'Simulated',
           is_from_db: true,
-          lic_req: licReq, // Include license requirement for allocation
+          lic_req: licReq,
+          planning_status: visit.planning_status || undefined, // Planning status from RPC
         };
       });
 
-      console.log('=== LOADED VISIT PLANNING DATA ===');
+
       console.log('📊 Total schedules loaded:', schedules.length);
       console.log('📊 Schedules by status:',{
         ongoing: schedules.filter(s => s.status_category === 'Ongoing').length,
@@ -487,6 +556,7 @@ export function PlanningScenarioBuilder() {
       console.log('📊 All loaded schedules:', schedules.map(s => ({
         aircraft_reg: s.aircraft_reg,
         status: s.status_category,
+        planning_status: s.planning_status,
         induct_date: s.induct_date,
         ets_date: s.ets_date,
         is_from_db: s.is_from_db,
@@ -794,6 +864,7 @@ export function PlanningScenarioBuilder() {
   const combinedSchedules = useMemo(() => {
     // Add additional aircraft as temporary entries for display
     // Include if they have either aircraft_engine_license OR tail_number, plus dates
+    // These are marked as 'Simulated' status since they're scenario-only (not from visits DB)
     const additionalAsSchedules: AircraftSchedule[] = additionalAircraft
       .filter(a => (a.aircraft_engine_license || a.tail_number) && a.induct_date && a.ets_date)
       .map(a => {
@@ -812,9 +883,10 @@ export function PlanningScenarioBuilder() {
           ets_date: a.ets_date,
           min_engineers: a.min_engineers,
           min_technicians: a.min_technicians,
-          status_category: 'Upcoming' as const,
+          status_category: 'Simulated' as const, // Mark as Simulated - only in scenario, not in visits
           is_from_db: false,
-          lic_req: a.lic_req || a.aircraft_engine_license || undefined, // Use lic_req field for allocation
+          lic_req: a.lic_req || a.aircraft_engine_license || undefined,
+          planning_status: 'simulated', // Planning status for simulated entries
         };
       });
 
@@ -906,6 +978,7 @@ export function PlanningScenarioBuilder() {
           status_category: schedule.status_category,
           is_from_db: schedule.is_from_db,
           lic_req: schedule.lic_req,
+          planning_status: schedule.planning_status,
         }));
 
       const newFlightsForStorage = validSchedules.map(schedule => ({
@@ -921,6 +994,7 @@ export function PlanningScenarioBuilder() {
         status_category: schedule.status_category,
         is_from_db: schedule.is_from_db,
         lic_req: schedule.lic_req,
+        planning_status: 'simulated',
       }));
 
       const aircraftSchedulesJson = [...baselineTasksForStorage, ...newFlightsForStorage];
@@ -1481,6 +1555,7 @@ export function PlanningScenarioBuilder() {
       case 'Ongoing': return 'bg-blue-50';
       case 'Upcoming': return 'bg-amber-50';
       case 'Completed': return 'bg-gray-100';
+      case 'Simulated': return 'bg-orange-50';
       default: return 'bg-white';
     }
   };
@@ -1490,6 +1565,17 @@ export function PlanningScenarioBuilder() {
       case 'Ongoing': return 'bg-blue-500 text-white';
       case 'Upcoming': return 'bg-amber-500 text-white';
       case 'Completed': return 'bg-gray-500 text-white';
+      case 'Simulated': return 'bg-orange-500 text-white';
+      default: return 'bg-gray-300 text-gray-700';
+    }
+  };
+
+  const getPlanningStatusBadgeColor = (status: string | undefined) => {
+    if (!status) return 'bg-gray-200 text-gray-600';
+    switch (status.toLowerCase()) {
+      case 'planned': return 'bg-purple-500 text-white';
+      case 'ongoing': return 'bg-blue-500 text-white';
+      case 'completed': return 'bg-green-500 text-white';
       default: return 'bg-gray-300 text-gray-700';
     }
   };
@@ -1509,17 +1595,25 @@ export function PlanningScenarioBuilder() {
           <h2 className="text-xl font-bold text-center">Planning Scenario Builder</h2>
         </div>
 
-        {/* Baseline Info Banner */}
+        {/* Baseline Info Banner with Active Scenario */}
         <div className="bg-green-50 border-b-2 border-green-200 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="text-green-600 text-lg">✈️</span>
-            <div>
-              <div className="font-semibold text-green-800">Visits Baseline (Ongoing & Upcoming)</div>
-              <div className="text-sm text-green-700">
-                These visits from the Visits module are your baseline and included in all scenarios. 
-                Add new flights below to create scenarios.
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-green-600 text-lg">✈️</span>
+              <div>
+                <div className="font-semibold text-green-800">Visits Baseline (Ongoing & Upcoming)</div>
+                <div className="text-sm text-green-700">
+                  These visits from the Visits module are your baseline and included in all scenarios. 
+                  Add new flights below to create scenarios.
+                </div>
               </div>
             </div>
+            {activeScenarioName && (
+              <div className="flex items-center gap-2 bg-green-100 border border-green-400 rounded-lg px-4 py-2">
+                <span className="text-green-700 font-medium">Active Scenario:</span>
+                <span className="text-green-900 font-bold">{activeScenarioName}</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1557,18 +1651,19 @@ export function PlanningScenarioBuilder() {
                     <div className="text-[10px] font-normal">(Technicians)</div>
                   </th>
                   <th className="border-r border-white px-2 py-2 text-center font-bold">Daywise</th>
+                  <th className="border-r border-white px-2 py-2 text-center font-bold">Planning Status</th>
                   <th className="px-2 py-2 text-center font-bold"></th>
                 </tr>
               </thead>
               <tbody>
-                {['Ongoing', 'Upcoming'].map(statusCategory => {
+                {['Ongoing', 'Upcoming', 'Simulated'].map(statusCategory => {
                   const categorySchedules = combinedSchedules.filter(a => a.status_category === statusCategory);
                   if (categorySchedules.length === 0) return null;
 
                   return (
                     <>
                       <tr key={statusCategory} className={getStatusColor(statusCategory)}>
-                        <td colSpan={11} className="px-2 py-1 font-bold border-b-2 border-gray-800">
+                        <td colSpan={12} className="px-2 py-1 font-bold border-b-2 border-gray-800">
                           {statusCategory} ({categorySchedules.length})
                       </td>
                     </tr>
@@ -1662,6 +1757,15 @@ export function PlanningScenarioBuilder() {
                                 <span className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full"></span>
                               )}
                             </button>
+                        </td>
+                        <td className="border-r border-gray-300 px-2 py-1 text-center">
+                          {aircraft.planning_status ? (
+                            <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded ${getPlanningStatusBadgeColor(aircraft.planning_status)}`}>
+                              {aircraft.planning_status}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400 text-[10px]">-</span>
+                          )}
                         </td>
                         <td className="px-2 py-1 text-center">
                           <button
