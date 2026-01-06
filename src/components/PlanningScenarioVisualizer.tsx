@@ -136,7 +136,8 @@ const TODAY = '2022-04-30';
 
 export function PlanningScenarioVisualizer() {
   const [scenarios, setScenarios] = useState<PlanningScenario[]>([]);
-  const [selectedScenario, setSelectedScenario] = useState<string>(''); // Default to no selection
+  const [selectedScenario, setSelectedScenario] = useState<string>(''); // Default to no selection - used for viewing
+  const [activeScenario, setActiveScenario] = useState<string>(''); // Separate state for "Current Active Scenario" in settings popup
   const [aircraftSchedules, setAircraftSchedules] = useState<AircraftSchedule[]>([]);
   const [dates, setDates] = useState<string[]>([]);
   const [bayAllocations, setBayAllocations] = useState<BayAllocation[]>([]);
@@ -595,6 +596,7 @@ export function PlanningScenarioVisualizer() {
       if (activeExists) {
         console.log('Auto-selecting active scenario from DB:', activeScenarioData.scenario_name);
         setSelectedScenario(activeScenarioData.scenario_name);
+        setActiveScenario(activeScenarioData.scenario_name); // Also set activeScenario state
       } else {
         console.log('Active scenario from DB not found in available scenarios:', activeScenarioData.scenario_name);
       }
@@ -796,6 +798,7 @@ export function PlanningScenarioVisualizer() {
       if (latestScenario) {
         skipTaskResetOnScenarioChangeRef.current = true;
         setSelectedScenario(latestScenarioName);
+        setActiveScenario(latestScenarioName); // Also update activeScenario state
         // Update active scenario in DB
         await updateActiveScenarioInDB(latestScenarioName);
       } else {
@@ -805,6 +808,7 @@ export function PlanningScenarioVisualizer() {
           console.log('Switching to base scenario:', base);
           skipTaskResetOnScenarioChangeRef.current = true;
           setSelectedScenario(base);
+          setActiveScenario(base); // Also update activeScenario state
           await updateActiveScenarioInDB(base);
         } else {
           // Force reload current scenario by calling handleScenarioSelection directly
@@ -1616,7 +1620,9 @@ export function PlanningScenarioVisualizer() {
 
     // Search in employees
     allEngineers.forEach(engineer => {
-      if (engineer.name.toLowerCase().includes(query) || engineer.id.toLowerCase().includes(query)) {
+      const name = engineer.name || '';
+      const id = engineer.id || '';
+      if (name.toLowerCase().includes(query) || id.toLowerCase().includes(query)) {
         matchingEngineers.add(engineer.id);
         isEngineerSearch = true;
       }
@@ -1626,8 +1632,9 @@ export function PlanningScenarioVisualizer() {
     if (scenarioRosterData.scenarioName && scenarioRosterData.byEmployee.size > 0) {
       scenarioRosterData.byEmployee.forEach((rows, empId) => {
         if (rows.length > 0) {
-          const empName = rows[0].name || empId;
-          if (empName.toLowerCase().includes(query) || empId.toLowerCase().includes(query)) {
+          const empName = rows[0].name || empId || '';
+          const id = empId || '';
+          if (empName.toLowerCase().includes(query) || id.toLowerCase().includes(query)) {
             matchingEngineers.add(empId);
             isEngineerSearch = true;
           }
@@ -1637,14 +1644,14 @@ export function PlanningScenarioVisualizer() {
 
     // Search in aircraft schedules
     aircraftSchedules.forEach(schedule => {
-      if (schedule.aircraft_reg.toLowerCase().includes(query)) {
+      if (schedule.aircraft_reg && schedule.aircraft_reg.toLowerCase().includes(query)) {
         matchingTails.add(schedule.aircraft_reg);
       }
     });
 
     // Search in engineer assignments
     engineerAssignments.forEach(assignment => {
-      if (assignment.tailNumber.toLowerCase().includes(query)) {
+      if (assignment.tailNumber && assignment.tailNumber.toLowerCase().includes(query)) {
         matchingTails.add(assignment.tailNumber);
       }
     });
@@ -3712,7 +3719,7 @@ export function PlanningScenarioVisualizer() {
   {/* Right section */}
   <div className="bg-[#dff2d0] px-6 py-2 border-l border-gray-300 flex items-center">
     <span className="text-sm font-semibold text-[#1a5fce]">
-      Active Scenario set – {selectedScenario || 'None'}
+      Active Scenario set – {activeScenario || 'None'}
     </span>
   </div>
 
@@ -3721,75 +3728,102 @@ export function PlanningScenarioVisualizer() {
         
         {/* Settings Popup - Active Scenario */}
         {showSettingsPopup && (
-  <div className="fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50 border bord">
-    <div className="bg-[#cfcfcf] w-80 border-2 border-[#0b3f4a] shadow-lg">
-      
+  <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+    <div className="w-[420px] rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden">
+
+      {/* Top Accent */}
+      <div className="h-1 bg-gradient-to-r from-emerald-400 to-blue-500" />
+
       {/* Header */}
-      <div className="bg-[#1a5f6a] text-white py-3 border-b-2 border-[#0b3f4a]">
-        <h3 className="text-center font-bold text-lg">
-          Active Scenario
-        </h3>
+      <div className="px-6 pt-6 pb-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold text-teal-700">
+            Active Scenario
+          </h2>
+          <button
+            onClick={() => setShowSettingsPopup(false)}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            ✕
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mt-1">
+          Configure and manage your planning scenario
+        </p>
       </div>
 
       {/* Content */}
-      <div className="p-4">
-        <div className="flex items-center gap-3 mb-4">
-          <label className="text-sm font-bold text-black leading-tight">
-            Current Active<br />
-            Scenario Set to
-          </label>
+      <div className="px-6 pb-6">
+        <label className="block text-sm font-semibold text-gray-700 mb-2">
+          Current Active Scenario
+        </label>
 
-          <div className="relative flex-1">
-            <select
-              value={selectedScenario}
-              onChange={(e) => {
-                const newScenario = e.target.value;
-                setSelectedScenario(newScenario);
-                if (newScenario) {
-                  updateActiveScenarioInDB(newScenario);
-                }
-              }}
-              className="w-full h-8 px-2 border-2 border-black bg-white appearance-none text-sm pr-8"
+        <div className="relative mb-6">
+          <select
+            value={activeScenario}
+            onChange={(e) => {
+              const newScenario = e.target.value;
+              setActiveScenario(newScenario);
+              if (newScenario) {
+                updateActiveScenarioInDB(newScenario);
+              }
+            }}
+            className="w-full h-11 px-4 pr-10 rounded-xl border border-gray-300 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-teal-500"
+          >
+            <option value="" disabled>
+              -- Select a scenario --
+            </option>
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id}>
+                {scenario.name}
+              </option>
+            ))}
+          </select>
+
+          {/* Dropdown icon */}
+          {/* <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none">
+            <svg
+              className="w-4 h-4 text-gray-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
             >
-              <option value="" disabled>-- Select a scenario --</option>
-              {scenarios.map((scenario) => (
-                <option key={scenario.id} value={scenario.id}>
-                  {scenario.name}
-                </option>
-              ))}
-            </select>
-
-            {/* Dropdown arrow box */}
-            <div className="absolute right-0 top-0 h-full w-8 bg-[#1a5f6a] border-l-2 border-black flex items-center justify-center pointer-events-none">
-              <svg
-                className="w-4 h-4 text-white"
-                fill="currentColor"
-                viewBox="0 0 20 20"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </div>
-          </div>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </div> */}
         </div>
 
-        {/* Play Button */}
-        <div className="flex justify-center mt-2">
+        {/* Load Button */}
+        <div className="flex justify-center">
           <button
-            onClick={() => setShowSettingsPopup(false)}
-            className="bg-[#1a5f6a] border-2 border-black p-2"
-            title="Apply and Close"
+            onClick={() => {
+              // Just close the popup - activeScenario is already saved to DB on dropdown change
+              // This does NOT affect selectedScenario (the viewing scenario)
+              setShowSettingsPopup(false);
+            }}
+            disabled={!activeScenario}
+            className={`flex items-center gap-2 px-6 py-3 rounded-full font-semibold shadow-md transition ${
+              activeScenario 
+                ? 'bg-teal-500 hover:bg-teal-600 text-white cursor-pointer' 
+                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            }`}
           >
-            <Play className="w-6 h-6 text-black fill-current" />
+            <Play className="w-4 h-4" />
+            Set Active
           </button>
         </div>
+
+        {/* Status */}
+        {/* <div className="flex items-center justify-center gap-2 mt-4 text-sm text-gray-600">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          Scenario Ready
+        </div> */}
       </div>
     </div>
   </div>
 )}
+
 
 
         <div className="mb-4">
@@ -3799,10 +3833,8 @@ export function PlanningScenarioVisualizer() {
             onChange={(e) => {
               const newScenario = e.target.value;
               setSelectedScenario(newScenario);
-              // Update active scenario in DB when user changes selection
-              if (newScenario) {
-                updateActiveScenarioInDB(newScenario);
-              }
+              // Note: This only loads/views the scenario locally
+              // To set Active Scenario, use the Settings popup
             }}
             className="w-full px-3 py-2 border-2 border-gray-300 rounded"
           >
@@ -5479,13 +5511,20 @@ export function PlanningScenarioVisualizer() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedDate(date);
+                              
+                              // Track if we'll have dates selected after this action
+                              let willHaveDatesSelected = selectedBayDates.size > 0;
+                              
                               if (!selectedBayDates.has(date)) {
                                 const newSelected = new Set(selectedBayDates);
                                 newSelected.add(date);
                                 setSelectedBayDates(newSelected);
                                 setLastClickedBayDate(date);
+                                willHaveDatesSelected = true; // We just added a date
                               }
-                              if (selectedBayDates.size > 0) {
+                              
+                              // Only toggle row highlight if we have dates selected AND there's an allocation
+                              if (willHaveDatesSelected && allocation) {
                                 setSelectedBayRowForHighlight(prev => prev === bayNum ? null : bayNum);
                               }
                             }}
