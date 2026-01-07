@@ -355,6 +355,19 @@ export function PlanningScenarioBuilder() {
 
         if (newScenario) {
           setSelectedScenarioId(newScenario.id);
+          
+          // Insert into scenario_active_state table to track active state
+          const { error: activeStateError } = await supabase
+            .from('scenario_active_state')
+            .insert({
+              scenario_name: scenarioName,
+              isactive: false,
+              updated_at: new Date().toISOString(),
+            });
+          
+          if (activeStateError) {
+            console.error('Error inserting into scenario_active_state:', activeStateError);
+          }
         }
       }
 
