@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Plus, Trash2, Save, Calendar, X, Loader2, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, Save, Calendar, X, Loader2, ChevronDown, Settings, Play } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 // AI Allocation API configuration
@@ -88,11 +88,11 @@ export function PlanningScenarioBuilder() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   
-  // Active scenario state (from scenario_active_state table)
-  const [activeScenarioName, setActiveScenarioName] = useState<string>('');
+  // Settings popup state
+  const [showSettingsPopup, setShowSettingsPopup] = useState(false);
+  const [activeScenario, setActiveScenario] = useState<string>('');
 
   useEffect(() => {
-    loadActiveScenarioName();
     loadSavedScenarios();
     loadVisitPlanningData();
   }, []);
@@ -114,31 +114,6 @@ export function PlanningScenarioBuilder() {
       setHasUnsavedChanges(true);
     }
   }, [aircraftSchedules, additionalAircraft, daywisePlans]);
-
-  // Load active scenario name from scenario_active_state table
-  async function loadActiveScenarioName() {
-    try {
-      const { data, error } = await supabase
-        .from('scenario_active_state')
-        .select('scenario_name')
-        .eq('isactive', true)
-        .single();
-
-      if (error) {
-        console.log('No active scenario found or error:', error.message);
-        setActiveScenarioName('');
-        return;
-      }
-
-      if (data && data.scenario_name) {
-        setActiveScenarioName(data.scenario_name);
-        console.log('Active scenario loaded:', data.scenario_name);
-      }
-    } catch (err) {
-      console.error('Exception loading active scenario:', err);
-      setActiveScenarioName('');
-    }
-  }
 
   async function loadSavedScenarios() {
     // Load from AI allocation scenarios table
@@ -328,7 +303,6 @@ export function PlanningScenarioBuilder() {
         status_category: schedule.status_category,
         is_from_db: schedule.is_from_db,
         lic_req: schedule.lic_req,
-        planning_status: schedule.planning_status,
       }));
 
       const additionalAircraftJson = additionalAircraft.map(aircraft => ({
@@ -591,7 +565,6 @@ export function PlanningScenarioBuilder() {
       console.log('📊 All loaded schedules:', schedules.map(s => ({
         aircraft_reg: s.aircraft_reg,
         status: s.status_category,
-        planning_status: s.planning_status,
         induct_date: s.induct_date,
         ets_date: s.ets_date,
         is_from_db: s.is_from_db,
@@ -601,7 +574,6 @@ export function PlanningScenarioBuilder() {
       setAircraftSchedules(schedules);
 
       // Extract unique map_key options (aircraft-engine-lic combinations)
-      // First try from RPC response, then fallback to loading from visit_planning_canonical
       const mapKeys = new Map<string, MapKeyOption>();
       data.forEach((visit: any) => {
         if (visit.aircraft && visit.engine && visit.lic_req) {
@@ -936,7 +908,6 @@ export function PlanningScenarioBuilder() {
   const combinedSchedules = useMemo(() => {
     // Add additional aircraft as temporary entries for display
     // Include if they have either aircraft_engine_license OR tail_number, plus dates
-    // These are marked as 'Simulated' status since they're scenario-only (not from visits DB)
     const additionalAsSchedules: AircraftSchedule[] = additionalAircraft
       .filter(a => (a.aircraft_engine_license || a.tail_number) && a.induct_date && a.ets_date)
       .map(a => {
@@ -1667,7 +1638,7 @@ export function PlanningScenarioBuilder() {
           <h2 className="text-xl font-bold text-center">Planning Scenario Builder</h2>
         </div>
 
-        {/* Baseline Info Banner with Active Scenario */}
+        {/* Baseline Info Banner */}
         <div className="bg-green-50 border-b-2 border-green-200 px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -1680,12 +1651,21 @@ export function PlanningScenarioBuilder() {
                 </div>
               </div>
             </div>
-            {activeScenarioName && (
-              <div className="flex items-center gap-2 bg-green-100 border border-green-400 rounded-lg px-4 py-2">
-                <span className="text-green-700 font-medium">Active Scenario:</span>
-                <span className="text-green-900 font-bold">{activeScenarioName}</span>
-              </div>
-            )}
+            {/* Settings Icon */}
+            <div className="flex items-center gap-3">
+              {activeScenario && (
+                <span className="text-sm font-semibold text-green-700 bg-green-100 px-3 py-1 rounded-full">
+                  Active: {savedScenarios.find(s => s.id === activeScenario)?.scenario_name || activeScenario}
+                </span>
+              )}
+              <button
+                className="p-2 hover:bg-green-100 rounded-full transition-colors"
+                onClick={() => setShowSettingsPopup(true)}
+                title="Active Scenario Settings"
+              >
+                <Settings className="w-5 h-5 text-green-700" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1708,6 +1688,7 @@ export function PlanningScenarioBuilder() {
               <thead className="sticky top-0 bg-purple-900 text-white z-10">
                 <tr>
                   <th className="border-r border-white px-2 py-2 text-left font-bold">Status</th>
+                  <th className="border-r border-white px-2 py-2 text-center font-bold">Planning Status</th>
                   <th className="border-r border-white px-2 py-2 text-left font-bold">Aircraft Reg</th>
                   <th className="border-r border-white px-2 py-2 text-left font-bold">Customer</th>
                   <th className="border-r border-white px-2 py-2 text-left font-bold">Fleet</th>
@@ -1723,7 +1704,7 @@ export function PlanningScenarioBuilder() {
                     <div className="text-[10px] font-normal">(Technicians)</div>
                   </th>
                   <th className="border-r border-white px-2 py-2 text-center font-bold">Daywise</th>
-                  <th className="border-r border-white px-2 py-2 text-center font-bold">Planning Status</th>
+                  {/* <th className="border-r border-white px-2 py-2 text-center font-bold">Planning Status</th> */}
                   <th className="px-2 py-2 text-center font-bold"></th>
                 </tr>
               </thead>
@@ -1745,6 +1726,15 @@ export function PlanningScenarioBuilder() {
                             <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded ${getStatusBadgeColor(aircraft.status_category)}`}>
                               {aircraft.status_category}
                             </span>
+                        </td>
+                        <td className="border-r border-gray-300 px-2 py-1 text-center">
+                          {aircraft.planning_status ? (
+                            <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded ${getPlanningStatusBadgeColor(aircraft.planning_status)}`}>
+                              {aircraft.planning_status}
+                            </span>
+                          ) : (
+                            <span className="text-gray-400 text-[10px]">-</span>
+                          )}
                         </td>
                         <td className="border-r border-gray-300 px-2 py-1">
                           <input
@@ -1830,7 +1820,7 @@ export function PlanningScenarioBuilder() {
                               )}
                             </button>
                         </td>
-                        <td className="border-r border-gray-300 px-2 py-1 text-center">
+                        {/* <td className="border-r border-gray-300 px-2 py-1 text-center">
                           {aircraft.planning_status ? (
                             <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded ${getPlanningStatusBadgeColor(aircraft.planning_status)}`}>
                               {aircraft.planning_status}
@@ -1838,7 +1828,7 @@ export function PlanningScenarioBuilder() {
                           ) : (
                             <span className="text-gray-400 text-[10px]">-</span>
                           )}
-                        </td>
+                        </td> */}
                         <td className="px-2 py-1 text-center">
                           <button
                             onClick={() => deleteAircraftRow(aircraft.id)}
@@ -2191,6 +2181,77 @@ export function PlanningScenarioBuilder() {
                 <Save size={16} />
                 Save Plan
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Popup - Active Scenario */}
+      {showSettingsPopup && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="w-[420px] rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden">
+            {/* Top Accent */}
+            <div className="h-1 bg-gradient-to-r from-emerald-400 to-blue-500" />
+
+            {/* Header */}
+            <div className="px-6 pt-6 pb-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-teal-700">
+                  Active Scenario
+                </h2>
+                <button
+                  onClick={() => setShowSettingsPopup(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                Configure and manage your active planning scenario
+              </p>
+            </div>
+
+            {/* Content */}
+            <div className="px-6 pb-6">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Current Active Scenario
+              </label>
+
+              <div className="relative mb-6">
+                <select
+                  value={activeScenario}
+                  onChange={(e) => setActiveScenario(e.target.value)}
+                  className="w-full h-11 px-4 pr-10 rounded-xl border border-gray-300 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                  <option value="" disabled>
+                    -- Select a scenario --
+                  </option>
+                  {savedScenarios.map((scenario) => (
+                    <option key={scenario.id} value={scenario.id}>
+                      {scenario.scenario_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Set Active Button */}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => {
+                    // Close the popup - activeScenario is now set
+                    setShowSettingsPopup(false);
+                  }}
+                  disabled={!activeScenario}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-full font-semibold shadow-md transition ${
+                    activeScenario 
+                      ? 'bg-teal-500 hover:bg-teal-600 text-white cursor-pointer' 
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Play className="w-4 h-4" />
+                  Set Active
+                </button>
+              </div>
             </div>
           </div>
         </div>
