@@ -5463,6 +5463,9 @@ export function PlanningScenarioVisualizer() {
 
                         const isBayDateSelected = selectedBayDates.has(date);
                         
+                        // Check if this is a simulated aircraft (2 or more hyphens in tail number)
+                        const isSimulatedAircraft = tail ? (tail.match(/-/g) || []).length >= 2 : false;
+                        
                         // Check if this cell should be highlighted green
                         const isBayColumnIntersection = selectedBayRowForHighlight === bayNum && selectedBayDates.has(date);
                         
@@ -5516,7 +5519,9 @@ export function PlanningScenarioVisualizer() {
                                 : allocation
                                   ? isHighlightedTail
                                     ? 'bg-yellow-400 hover:bg-yellow-500 ring-2 ring-yellow-600 ring-inset'
-                                    : 'bg-blue-500 hover:bg-blue-600'
+                                    : isSimulatedAircraft
+                                      ? 'bg-orange-400 hover:bg-orange-500'
+                                      : 'bg-blue-500 hover:bg-blue-600'
                                   : isBayDateSelected 
                                     ? 'bg-blue-100/70' 
                                     : ''
@@ -5547,7 +5552,7 @@ export function PlanningScenarioVisualizer() {
                             {/* Tail number label spanning multiple cells */}
                             {showLabel && allocation && (
                               <div
-                                className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${isBayColumnIntersection ? 'text-green-900' : isHighlightedTail ? 'text-yellow-900' : isBayDateSelected ? 'text-blue-900' : 'text-white'}`}
+                                className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${isBayColumnIntersection ? 'text-green-900' : isHighlightedTail ? 'text-yellow-900' : isSimulatedAircraft ? 'text-orange-900' : isBayDateSelected ? 'text-blue-900' : 'text-white'}`}
                                 style={{ width: `${span * 80}px` }}
                               >
                                 {allocation.aircraft.aircraft_reg}
@@ -5572,6 +5577,10 @@ export function PlanningScenarioVisualizer() {
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 bg-blue-500 rounded"></div>
             <span className="font-medium">Scheduled Aircraft</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-orange-400 rounded"></div>
+            <span className="font-medium">Simulated Aircraft</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 bg-yellow-400 ring-2 ring-yellow-600 rounded"></div>
