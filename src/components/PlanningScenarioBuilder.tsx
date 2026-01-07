@@ -327,7 +327,13 @@ export function PlanningScenarioBuilder() {
         .single();
 
       if (existingScenario) {
-        // Update existing
+        // If creating a NEW scenario, block duplicate names
+        if (selectedScenarioId === 'new') {
+          alert(`Scenario name "${scenarioName}" already exists. Please choose a different name.`);
+          setIsLoading(false);
+          return;
+        }
+        // Update existing (only when editing the same scenario)
         await supabase
           .from('ai_allocation_scenarios_v2')
           .update({
@@ -1306,8 +1312,16 @@ export function PlanningScenarioBuilder() {
       let scenario;
       const isUpdate = !!existingScenario;
 
+      // If creating a NEW scenario, block duplicate names
+      if (existingScenario && selectedScenarioId === 'new') {
+        alert(`Scenario name "${scenarioName}" already exists. Please choose a different name.`);
+        setIsBuilding(false);
+        setBuildProgress('');
+        return;
+      }
+
       if (existingScenario) {
-        // Update existing scenario
+        // Update existing scenario (only when editing the same scenario)
         setBuildProgress('Updating existing scenario...');
         const { data: updatedScenario, error: updateError } = await supabase
           .from('ai_allocation_scenarios_v2')
