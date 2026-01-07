@@ -3866,12 +3866,20 @@ export function PlanningScenarioVisualizer() {
                 className="w-full pl-10 pr-3 py-2 border-2 border-gray-300 rounded focus:border-blue-500 focus:outline-none"
               />
             </div>
-            {(searchQuery || selectedTask) && (
+            {(searchQuery || selectedTask || selectedBayDates.size > 0 || selectedBayCells) && (
               <button
                 onClick={() => {
                   setSearchQuery('');
                   setSelectedBay(null);
                   setSelectedTask(null);
+                  // Clear all column/cell selections
+                  setSelectedBayDates(new Set());
+                  setLastClickedBayDate(null);
+                  setSelectedBayCells(null);
+                  setIsDraggingBaySelection(false);
+                  setDragStartCell(null);
+                  setSelectedBayRowForHighlight(null);
+                  setSelectedTailDetails(null);
                 }}
                 className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors font-medium"
               >
@@ -5102,24 +5110,17 @@ export function PlanningScenarioVisualizer() {
                 {/* Row 2: Date columns */}
                 <div className="flex">
                   {displayDates.map((date, idx) => {
-                    const isSelected = date === selectedDate;
-                    const isBaySelected = selectedBayDates.has(date);
                     return (
                       <div
                         key={date}
                         className={`
                           flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
-                          cursor-pointer transition-all relative select-none
-                          ${isBaySelected
-                            ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                            : isSelected
-                              ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                              : idx === todayIndex
-                                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          select-none
+                          ${idx === todayIndex
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-gray-100 text-gray-700'
                           }
                         `}
-                        onClick={(e) => handleBayDateClick(date, e)}
                       >
                         {formatDate(date)}
                       </div>
@@ -5202,9 +5203,6 @@ export function PlanningScenarioVisualizer() {
                           ? CELL_COLORS.TAIL  // Green background for tail numbers
                           : getCellColors(displayValue);  // Standard roster code colors
 
-                      const isSelectedDate = date === selectedDate;
-                      const isBayDateSelected = selectedBayDates.has(date);
-
                       // Calculate expired training overlay opacity for this employee-date
                       const expiredTrainingOpacity = getExpiredTrainingOpacity(engineer.id, date);
 
@@ -5216,16 +5214,7 @@ export function PlanningScenarioVisualizer() {
                       return (
                         <div
                           key={date}
-                          onClick={(e) => handleBayDateClick(date, e)}
-                          className={`
-                            flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center cursor-pointer
-                            ${isBayDateSelected 
-                              ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset' 
-                              : isSelectedDate 
-                                ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset' 
-                                : ''
-                            }
-                          `}
+                          className="flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center"
                           title={expiredTrainingsTooltip || undefined}
                         >
                           {/* Expired training red overlay - translucent gradient that increases over time */}
@@ -5234,14 +5223,6 @@ export function PlanningScenarioVisualizer() {
                               className="absolute inset-0 pointer-events-none z-[1]" 
                               style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
                             />
-                          )}
-                          {/* Multi-selected column highlight band */}
-                          {isBayDateSelected && (
-                            <div className="absolute inset-0 bg-blue-500/20 pointer-events-none z-[2]"></div>
-                          )}
-                          {/* Selected column highlight band */}
-                          {isSelectedDate && !isBayDateSelected && (
-                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none z-[2]"></div>
                           )}
                           <div className="relative z-10">
                             {displayValue ? (
