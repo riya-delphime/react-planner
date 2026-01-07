@@ -860,7 +860,8 @@ export function WorkforcePlanning() {
   // Render cell using explicit color rules (no regex)
   // hasAlert parameter indicates if this cell belongs to an employee with an alert on this date
   // searchTerm is used to highlight matching cells in yellow
-  const renderCell = (displayValue: string | undefined, searchTerm?: string, hasAlert?: boolean) => {
+  // dateStr is used to determine if this is a future date (for lighter green styling)
+  const renderCell = (displayValue: string | undefined, dateStr: string, searchTerm?: string, hasAlert?: boolean) => {
     if (!displayValue || displayValue === '-') {
       return <span className="text-gray-300">-</span>;
     }
@@ -899,7 +900,32 @@ export function WorkforcePlanning() {
       }
     }
 
-    const colors = getCellColors(displayValue);
+    // Determine if this is a future date relative to reference date (CURRENT_DATE = 2022-04-30)
+    const isFutureDate = dateStr > CURRENT_DATE;
+    
+    // Check if this is a tail number
+    const isTail = isTailNumber(displayValue);
+    
+    // Check if this is a simulated tail (contains '--')
+    const isSimulatedTail = isTail && displayValue.includes('--');
+
+    // Apply conditional styling for tails based on date and simulation status
+    let colors;
+    if (isTail) {
+      if (isSimulatedTail) {
+        // Simulated tails (with '--') always show in grey
+        colors = CELL_COLORS.TAIL_SIMULATED;
+      } else if (isFutureDate) {
+        // Future tails show in lighter green
+        colors = CELL_COLORS.TAIL_FUTURE;
+      } else {
+        // Past/current tails show in dark green (existing behavior)
+        colors = CELL_COLORS.TAIL;
+      }
+    } else {
+      // Non-tail values use standard roster code colors
+      colors = getCellColors(displayValue);
+    }
 
     return (
       <div
@@ -1465,7 +1491,7 @@ export function WorkforcePlanning() {
                             <div className="absolute inset-0 bg-blue-500/10 pointer-events-none"></div>
                           )}
                           <div className="relative z-10">
-                            {renderCell(displayValue, searchMode && searchMode !== 'alert' ? searchQuery : undefined, shouldShowAsNoShow)}
+                            {renderCell(displayValue, dateStr, searchMode && searchMode !== 'alert' ? searchQuery : undefined, shouldShowAsNoShow)}
                           </div>
                         </div>
                       );
@@ -1482,10 +1508,22 @@ export function WorkforcePlanning() {
           <div className="flex items-center gap-6 flex-wrap">
             <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Legend:</span>
 
-            {/* Tail number - Green with white font */}
+            {/* Tail number (Current/Past) - Dark Green with white font */}
             <div className="flex items-center gap-2">
               <div className={`w-4 h-4 ${CELL_COLORS.TAIL.bg} rounded`}></div>
-              <span className="text-xs font-medium text-slate-700">Tail (Aircraft)</span>
+              <span className="text-xs font-medium text-slate-700">Tail (Current/Past)</span>
+            </div>
+
+            {/* Tail number (Future) - Lighter Green */}
+            <div className="flex items-center gap-2">
+              <div className={`w-4 h-4 ${CELL_COLORS.TAIL_FUTURE.bg} rounded`}></div>
+              <span className="text-xs font-medium text-slate-700">Tail (Future)</span>
+            </div>
+
+            {/* Simulated Tail - Grey */}
+            <div className="flex items-center gap-2">
+              <div className={`w-4 h-4 ${CELL_COLORS.TAIL_SIMULATED.bg} rounded`}></div>
+              <span className="text-xs font-medium text-slate-700">Simulated Tail</span>
             </div>
 
             {/* AL, TR, SK - Light Green */}

@@ -24,7 +24,7 @@ export const CURRENT_DATE = '2022-04-30';
 /**
  * Window calculation: 88 days before current_date
  */
-export const WINDOW_DAYS_BEFORE = 88;
+export const WINDOW_DAYS_BEFORE = 30;
 
 /**
  * Window calculation: 31 days after current_date
@@ -272,7 +272,7 @@ export function getDateZone(dateStr: string, currentDate: string = CURRENT_DATE)
 
 /**
  * Regex pattern for tail number detection
- * Matches patterns like: A6-EYE, OY-VKF, HZ-AQB, F-WTAK, N123AB, D-EFGH, VH-XYZ, TC-TUV, A6-BMC, A6-ETQ
+ * Matches patterns like: A6-EYE, OY-VKF, HZ-AQB, F-WTAK, N123AB, D-EFGH, VH-XYZ, TC-TUV, A6-BMC, A6-ETQ, A350-RRTRE
  *
  * Pattern explanation:
  * - ^[A-Z][A-Z0-9]?-[A-Z0-9]{2,5}$ : International format with alphanumeric prefix (A6-EYE, A6-BMC, F-WTAK, HZ-AQB)
@@ -280,8 +280,9 @@ export function getDateZone(dateStr: string, currentDate: string = CURRENT_DATE)
  * - ^[A-Z]-[A-Z]{4}$ : Single-letter European prefix (D-EFGH, F-ABCD)
  * - ^[A-Z]{2}-[A-Z]{3}$ : Two-letter prefix with 3-letter suffix (VH-XYZ, EI-GWZ)
  * - ^[A-Z]{2}[0-9]{3,4}[A-Z]{0,2}$ : No-dash formats (EC123, PR1234AB)
+ * - ^[A-Z][0-9]{2,3}-[A-Z0-9\/-]+$ : Aircraft type + registration format (A350-RRTRE, A350-RRTRENTXWB-GC/O, B737-XXXXX)
  */
-export const TAIL_NUMBER_PATTERN = /^([A-Z][A-Z0-9]?-[A-Z0-9]{2,5}|N[0-9]+[A-Z]*|[A-Z]-[A-Z]{4}|[A-Z]{2}-[A-Z]{3}|[A-Z]{2}[0-9]{3,4}[A-Z]{0,2})$/i;
+export const TAIL_NUMBER_PATTERN = /^([A-Z][A-Z0-9]?-[A-Z0-9]{2,5}|N[0-9]+[A-Z]*|[A-Z]-[A-Z]{4}|[A-Z]{2}-[A-Z]{3}|[A-Z]{2}[0-9]{3,4}[A-Z]{0,2}|[A-Z][0-9]{2,3}-[A-Z0-9\/-]+)$/i;
 
 /**
  * Set of OFF/roster codes loaded from shift_code_master (duration_hours = 0)
@@ -397,7 +398,7 @@ export async function fetchPlanningMasterData(
 
   try {
     // RPC call with parameters matching the function signature:
-    // planning_master_fn(p_curr_date date, p_win_start date, p_win_end date)
+    // planning_master_fn_v2(p_curr_date date, p_win_start date, p_win_end date)
     // Batch to get all records (Supabase has 1000 row limit per call)
     const allData: PlanningMasterRecord[] = [];
     const batchSize = 1000;
@@ -406,7 +407,7 @@ export async function fetchPlanningMasterData(
 
     while (hasMore) {
       const { data, error } = await supabase
-        .rpc('planning_master_fn', {
+        .rpc('planning_master_fn_v2', {
           p_curr_date: currentDate,
           p_win_start: winStartDate,
           p_win_end: winEndDate
@@ -605,7 +606,6 @@ export function processGridData(
 
     // Process each date in the range
     dateRange.forEach(dateStr => {
-      const zone = getDateZone(dateStr, currentDate);
       const records = empData.dateRecords.get(dateStr);
 
       let displayValue = '';
@@ -626,35 +626,20 @@ export function processGridData(
         // Concatenate multiple tasks with '/'
         const concatenatedTask = actualTasks.join('/');
 
-        switch (zone) {
-          case 'past':
-          case 'current':
-            // For past/current: use actual_task, apply appropriate styling
-            if (concatenatedTask) {
-              displayValue = concatenatedTask;
-              // For styling, check the first task (or if all are tails, it's a tail display)
-              const firstTask = actualTasks[0] || '';
-              isRoster = isRosterLike(firstTask);
-              isTail = !isRoster && isTailNumber(firstTask);
-              if (isRoster) rosterCode = firstTask;
-            } else if (rosterEntry) {
-              // Fallback to roster_entry if no actual_task
-              displayValue = rosterEntry;
-              isRoster = true;
-              rosterCode = rosterEntry;
-            }
-            break;
-
-          case 'future':
-            // For future: only show roster_entry, never show tail numbers
-            if (rosterEntry) {
-              displayValue = rosterEntry;
-              isRoster = true;
-              isTail = false;
-              rosterCode = rosterEntry;
-            }
-            // Explicitly do NOT use actual_task for future dates
-            break;
+        // Step 2.1: Same logic for ALL zones (past, current, future)
+        // Rule: If actual_task is non-empty → display actual_task, else → display roster_entry
+        if (concatenatedTask) {
+          displayValue = concatenatedTask;
+          // For styling, check the first task (or if all are tails, it's a tail display)
+          const firstTask = actualTasks[0] || '';
+          isRoster = isRosterLike(firstTask);
+          isTail = !isRoster && isTailNumber(firstTask);
+          if (isRoster) rosterCode = firstTask;
+        } else if (rosterEntry) {
+          // Fallback to roster_entry if no actual_task
+          displayValue = rosterEntry;
+          isRoster = true;
+          rosterCode = rosterEntry;
         }
 
         // Store date-specific details for Core/Support/TTL Login columns (use first record)
@@ -851,7 +836,9 @@ export const CELL_COLORS = {
   DAY_OFF: { bg: 'bg-orange-400', text: 'text-gray-900' },             // DO
   HOUSEKEEPING: { bg: 'bg-pink-200', text: 'text-red-700' },           // HSE-KPNG, etc.
   SHIFT: { bg: 'bg-blue-200', text: 'text-gray-900' },                 // 1, D, E, B1
-  TAIL: { bg: 'bg-green-600', text: 'text-white font-bold' },          // Everything else (tails)
+  TAIL: { bg: 'bg-green-600', text: 'text-white font-bold' },          // Everything else (tails) - past/current
+  TAIL_FUTURE: { bg: 'bg-green-400', text: 'text-green-900 font-bold' },  // Future tail assignments (lighter green)
+  TAIL_SIMULATED: { bg: 'bg-gray-500', text: 'text-white font-bold' },    // Simulated tails (contains '--')
 };
 
 // Legacy exports for compatibility
