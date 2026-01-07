@@ -20,7 +20,8 @@
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, AlertTriangle, Search, X, Check, XCircle, CheckCircle2, RotateCcw, ArrowUpDown, ArrowUp, ArrowDown, User } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, AlertTriangle, Search, X, Check, XCircle, CheckCircle2, RotateCcw, ArrowUpDown, ArrowUp, ArrowDown, User, Settings, Play } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 import { EmployeeDetailDrawer } from './EmployeeDetailDrawer';
 import {
   CURRENT_DATE,
@@ -163,6 +164,17 @@ export function WorkforcePlanning() {
   const [showEmployeeDrawer, setShowEmployeeDrawer] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<WorkforceGridRow | null>(null);
 
+    // Settings popup state for Active Scenario
+    const [showSettingsPopup, setShowSettingsPopup] = useState(false);
+    const [activeScenario, setActiveScenario] = useState<string>('');
+    const [savedScenarios, setSavedScenarios] = useState<Array<{
+      id: string;
+      scenario_name: string;
+      created_at: string;
+      status: string;
+      source: 'ai' | 'legacy';
+    }>>([]);  
+
   // Refs for scroll synchronization
   const dateHeaderRef = useRef<HTMLDivElement>(null);
   const selectedColumnRef = useRef<HTMLDivElement>(null);
@@ -176,7 +188,63 @@ export function WorkforcePlanning() {
   // Load data on mount
   useEffect(() => {
     loadData();
+    loadSavedScenarios();
   }, []);
+
+  // Load saved scenarios for settings popup
+  async function loadSavedScenarios() {
+    // Load from AI allocation scenarios table
+    const { data: aiData } = await supabase
+      .from('ai_allocation_scenarios_v2')
+      .select('id, scenario_name, created_at, status')
+      .order('created_at', { ascending: false });
+
+    // Load from legacy planning_scenarios table
+    const { data: legacyData } = await supabase
+      .from('planning_scenarios')
+      .select('id, name, created_at')
+      .order('created_at', { ascending: false });
+
+    const allScenarios: Array<{
+      id: string;
+      scenario_name: string;
+      created_at: string;
+      status: string;
+      source: 'ai' | 'legacy';
+    }> = [];
+
+    // Add AI scenarios
+    if (aiData) {
+      aiData.forEach((s: any) => {
+        allScenarios.push({
+          id: s.id,
+          scenario_name: s.scenario_name,
+          created_at: s.created_at,
+          status: s.status || 'draft',
+          source: 'ai',
+        });
+      });
+    }
+
+    // Add legacy scenarios
+    if (legacyData) {
+      legacyData.forEach((s: any) => {
+        allScenarios.push({
+          id: `legacy_${s.id}`,
+          scenario_name: s.name,
+          created_at: s.created_at,
+          status: 'legacy',
+          source: 'legacy',
+        });
+      });
+    }
+
+    // Sort by created_at descending
+    allScenarios.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    
+    setSavedScenarios(allScenarios);
+  }
+
 
   // Extract alerts when grid data or selected date changes
   useEffect(() => {
@@ -1124,10 +1192,26 @@ export function WorkforcePlanning() {
         {/* Header with Title, KPIs, and Date Selector */}
         <div className="bg-gradient-to-r from-slate-100 to-slate-50 border-b-2 border-gray-800 p-4">
           <div className="flex items-center justify-between">
-            {/* Title */}
-            <h2 className="text-xl font-bold text-slate-800">
-              Assignments & Roster Plan
-            </h2>
+            {/* Title with Settings Icon */}
+            <div className="flex items-center gap-3">
+              <h2 className="text-xl font-bold text-slate-800">
+                Assignments & Roster Plan
+              </h2>
+              {/* Active Scenario Badge */}
+              {activeScenario && (
+                <span className="text-sm font-semibold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
+                  Active: {savedScenarios.find(s => s.id === activeScenario)?.scenario_name || activeScenario}
+                </span>
+              )}
+              {/* Settings Icon */}
+              <button
+                className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+                onClick={() => setShowSettingsPopup(true)}
+                title="Active Scenario Settings"
+              >
+                <Settings className="w-5 h-5 text-slate-600" />
+              </button>
+            </div>
 
             {/* Date Selector */}
             <div className="flex items-center gap-6">
@@ -2057,6 +2141,77 @@ export function WorkforcePlanning() {
         employee={selectedEmployee}
         selectedDate={selectedDate}
       />
+
+      {/* SETTINGS POPUP - Active Scenario */}
+      {showSettingsPopup && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+          <div className="w-[420px] rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden">
+            {/* Top Accent */}
+            <div className="h-1 bg-gradient-to-r from-emerald-400 to-blue-500" />
+
+            {/* Header */}
+            <div className="px-6 pt-6 pb-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-teal-700">
+                  Active Scenario
+                </h2>
+                <button
+                  onClick={() => setShowSettingsPopup(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                Configure and manage your active planning scenario
+              </p>
+            </div>
+
+            {/* Content */}
+            <div className="px-6 pb-6">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Current Active Scenario
+              </label>
+
+              <div className="relative mb-6">
+                <select
+                  value={activeScenario}
+                  onChange={(e) => setActiveScenario(e.target.value)}
+                  className="w-full h-11 px-4 pr-10 rounded-xl border border-gray-300 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                  <option value="" disabled>
+                    -- Select a scenario --
+                  </option>
+                  {savedScenarios.map((scenario) => (
+                    <option key={scenario.id} value={scenario.id}>
+                      {scenario.source === 'ai' ? '🤖 ' : ''}{scenario.scenario_name} {scenario.status === 'completed' ? '✓' : scenario.status === 'failed' ? '✗' : scenario.status === 'draft' ? '📝' : scenario.status === 'legacy' ? '📋' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Set Active Button */}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => {
+                    // Close the popup - activeScenario is now set
+                    setShowSettingsPopup(false);
+                  }}
+                  disabled={!activeScenario}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-full font-semibold shadow-md transition ${
+                    activeScenario 
+                      ? 'bg-teal-500 hover:bg-teal-600 text-white cursor-pointer' 
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  <Play className="w-4 h-4" />
+                  Set Active
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
