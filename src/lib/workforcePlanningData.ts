@@ -24,7 +24,7 @@ export const CURRENT_DATE = '2022-04-30';
 /**
  * Window calculation: 88 days before current_date
  */
-export const WINDOW_DAYS_BEFORE = 30;
+export const WINDOW_DAYS_BEFORE = 88;
 
 /**
  * Window calculation: 31 days after current_date
@@ -399,36 +399,20 @@ export async function fetchPlanningMasterData(
   try {
     // RPC call with parameters matching the function signature:
     // planning_master_fn_v2(p_curr_date date, p_win_start date, p_win_end date)
-    // Batch to get all records (Supabase has 1000 row limit per call)
-    const allData: PlanningMasterRecord[] = [];
-    const batchSize = 1000;
-    let offset = 0;
-    let hasMore = true;
+    // The RPC function returns all rows in a single call
+    const { data, error } = await supabase
+      .rpc('planning_master_fn_v2', {
+        p_curr_date: currentDate,
+        p_win_start: winStartDate,
+        p_win_end: winEndDate
+      });
 
-    while (hasMore) {
-      const { data, error } = await supabase
-        .rpc('planning_master_fn_v2', {
-          p_curr_date: currentDate,
-          p_win_start: winStartDate,
-          p_win_end: winEndDate
-        })
-        .range(offset, offset + batchSize - 1);
-
-      if (error) {
-        console.error('Error fetching planning master data:', error);
-        throw error;
-      }
-
-      if (data && data.length > 0) {
-        allData.push(...data);
-        offset += batchSize;
-        hasMore = data.length === batchSize;
-      } else {
-        hasMore = false;
-      }
+    if (error) {
+      console.error('Error fetching planning master data:', error);
+      throw error;
     }
 
-    return allData;
+    return data || [];
   } catch (err) {
     console.error('Exception fetching planning master data:', err);
     return [];
