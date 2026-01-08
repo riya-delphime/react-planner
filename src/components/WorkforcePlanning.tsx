@@ -1281,11 +1281,13 @@ export function WorkforcePlanning() {
 
           {/* ================================================================== */}
           {/* ALERTS PANEL */}
-          {/* Alerts are enabled only when Selected Date ≤ Today */}
-          {/* For future dates, show disabled/greyed-out ribbon */}
+          {/* Three states based on date and alert count: */}
+          {/* 1. Future date (> Today): Grey disabled ribbon, no button */}
+          {/* 2. Past/Current date with alerts: Orange/Blue ribbon with View Details button */}
+          {/* 3. Past/Current date with NO alerts: Blue "No alerts" ribbon, no button */}
           {/* ================================================================== */}
           {isFutureDateSelected ? (
-            /* Disabled state for future dates - no alerts functionality */
+            /* Future dates - disabled/greyed-out ribbon, no alerts functionality */
             <div className="mt-4 rounded-lg p-3 flex items-center justify-between border-2 bg-gray-100 border-gray-300 opacity-60 cursor-not-allowed">
               <div className="flex items-center gap-3">
                 <AlertTriangle className="text-gray-400" size={24} />
@@ -1295,8 +1297,8 @@ export function WorkforcePlanning() {
               </div>
               {/* No View Details button for future dates */}
             </div>
-          ) : alerts.length > 0 && (
-            /* Active state for current/past dates with alerts */
+          ) : alerts.length > 0 ? (
+            /* Past/Current date WITH alerts - show active alert ribbon with View Details */
             <div className={`mt-4 rounded-lg p-3 flex items-center justify-between border-2 ${
               allAlertsResolved
                 ? 'bg-blue-50 border-blue-300'
@@ -1326,6 +1328,17 @@ export function WorkforcePlanning() {
               >
                 View Details
               </button>
+            </div>
+          ) : (
+            /* Past/Current date with ZERO alerts - blue "No alerts" ribbon, non-clickable */
+            <div className="mt-4 rounded-lg p-3 flex items-center border-2 bg-blue-50 border-blue-300">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="text-blue-500" size={24} />
+                <span className="font-semibold text-blue-800">
+                  {formatDateForHeader(selectedDate)} – No alerts
+                </span>
+              </div>
+              {/* No View Details button when there are no alerts */}
             </div>
           )}
 
