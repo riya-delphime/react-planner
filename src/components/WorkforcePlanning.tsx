@@ -249,11 +249,11 @@ export function WorkforcePlanning() {
   // Extract alerts when grid data or selected date changes
   useEffect(() => {
     if (gridData.length > 0) {
-      const extractedAlerts = extractAlertsForDate(gridData, CURRENT_DATE);
+      const extractedAlerts = extractAlertsForDate(gridData, selectedDate);
       setAlerts(extractedAlerts);
       setTailSummaries(groupAlertsByTail(extractedAlerts));
     }
-  }, [gridData]);
+  }, [gridData, selectedDate]);
 
   // Scroll selected date column to align left edge with TTL column edge
   // This handles user-initiated date changes (after initial scroll is done)
@@ -1272,9 +1272,9 @@ export function WorkforcePlanning() {
                 )}
                 <span className={`font-semibold ${allAlertsResolved ? 'text-blue-800' : 'text-orange-800'}`}>
                   {allAlertsResolved ? (
-                    <>Apr 30: All {totalAlerts} alerts resolved ({fixedCount} fixed, {noFixCount} no-fix)</>
+                    <>{formatDateForHeader(selectedDate)}: All {totalAlerts} alerts resolved ({fixedCount} fixed, {noFixCount} no-fix)</>
                   ) : (
-                    <>Apr 30 Alerts: {openAlertCount} open ({noShowCount} no-show, {leaveCount} leave)</>
+                    <>{formatDateForHeader(selectedDate)} Alerts: {openAlertCount} open ({noShowCount} no-show, {leaveCount} leave)</>
                   )}
                 </span>
               </div>
@@ -1814,8 +1814,8 @@ export function WorkforcePlanning() {
                 )}
                 <h3 className="text-xl font-bold text-white">
                   {allAlertsResolved
-                    ? `Apr 30: All ${totalAlerts} alerts resolved`
-                    : 'Apr 30 Alerts'
+                    ? `${formatDateForHeader(selectedDate)}: All ${totalAlerts} alerts resolved`
+                    : `${formatDateForHeader(selectedDate)} Alerts`
                   }
                 </h3>
               </div>
