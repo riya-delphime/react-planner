@@ -2055,7 +2055,10 @@ export function WorkforcePlanning() {
                 </h3>
               </div>
               <button
-                onClick={() => setShowAlertDetails(false)}
+                onClick={() => {
+                  setShowAlertDetails(false);
+                  window.location.reload();  // Reload to re-fetch data from DB
+                }}
                 className="p-2 hover:bg-white/20 rounded-lg transition-colors"
               >
                 <X className="text-white" size={24} />
@@ -2386,7 +2389,10 @@ export function WorkforcePlanning() {
             {/* Modal Footer */}
             <div className="border-t border-gray-200 p-4 flex justify-end">
               <button
-                onClick={() => setShowAlertDetails(false)}
+                onClick={() => {
+                  setShowAlertDetails(false);
+                  window.location.reload();  // Reload to re-fetch data from DB
+                }}
                 className="px-6 py-2 bg-gray-800 text-white font-semibold rounded-lg hover:bg-gray-900 transition-colors"
               >
                 Close
