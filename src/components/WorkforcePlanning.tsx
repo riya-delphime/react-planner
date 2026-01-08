@@ -936,41 +936,192 @@ export function WorkforcePlanning() {
     }
   };
 
-  // Handle no-fix for a single alert
-  const handleNoFix = (alert: AlertData) => {
+  // Handle no-fix for a single alert - WITH DB WRITE
+  const handleNoFix = async (alert: AlertData) => {
     const alertKey = `${alert.empId}-${alert.date}`;
+
+    // Mark as loading to prevent double submission
     setRecommendationStates(prev => {
       const newMap = new Map(prev);
-      newMap.set(alertKey, {
-        alertKey,
-        decision_status: 'no_fix',
-        candidates: prev.get(alertKey)?.candidates || [],
-        isLoading: false,
-        message: 'Marked as no-fix'
-      });
+      const existing = newMap.get(alertKey);
+      if (existing) {
+        newMap.set(alertKey, { ...existing, isLoading: true });
+      } else {
+        newMap.set(alertKey, {
+          alertKey,
+          decision_status: 'unresolved',
+          candidates: [],
+          isLoading: true
+        });
+      }
       return newMap;
     });
-  };
 
-  // Handle no-fix for all remaining alerts
-  const handleNoFixAll = () => {
-    setRecommendationStates(prev => {
-      const newMap = new Map(prev);
-      alerts.forEach(alert => {
-        const alertKey = `${alert.empId}-${alert.date}`;
-        const existing = newMap.get(alertKey);
-        if (!existing || existing.decision_status === 'unresolved') {
+    // =========================================================================
+    // DB INSERT: Persist no-fix decision to alert_replacements table
+    // replacement_id and replacement_name are blank for no-fix
+    // =========================================================================
+    try {
+      const { error: insertError } = await supabase
+        .from('alert_replacements')
+        .insert({
+          alert_id: alert.empId,
+          alert_name: alert.empName,
+          replacement_id: '',              // BLANK - no replacement selected
+          replacement_name: '',            // BLANK - no replacement selected
+          date: alert.date,
+          tail_num: alert.tailNumber || null,
+          created_at: '2022-04-30'         // Fixed demo date per requirement
+        });
+
+      if (insertError) {
+        console.error('Error inserting no-fix record:', insertError);
+        // Update state with error, allow retry
+        setRecommendationStates(prev => {
+          const newMap = new Map(prev);
+          newMap.set(alertKey, {
+            alertKey,
+            decision_status: 'unresolved',
+            candidates: prev.get(alertKey)?.candidates || [],
+            isLoading: false,
+            message: 'Failed to save no-fix: ' + insertError.message
+          });
+          return newMap;
+        });
+      } else {
+        console.log('Successfully inserted no-fix record for:', alert.empName);
+        // Update state to no_fix (prevents double submission)
+        setRecommendationStates(prev => {
+          const newMap = new Map(prev);
           newMap.set(alertKey, {
             alertKey,
             decision_status: 'no_fix',
-            candidates: existing?.candidates || [],
+            candidates: prev.get(alertKey)?.candidates || [],
             isLoading: false,
             message: 'Marked as no-fix'
           });
-        }
+          return newMap;
+        });
+        // Trigger page reload to re-fetch data from DB (per requirement #14)
+        window.location.reload();
+      }
+    } catch (err) {
+      console.error('Exception inserting no-fix:', err);
+      // Update state with error
+      setRecommendationStates(prev => {
+        const newMap = new Map(prev);
+        newMap.set(alertKey, {
+          alertKey,
+          decision_status: 'unresolved',
+          candidates: prev.get(alertKey)?.candidates || [],
+          isLoading: false,
+          message: 'Error saving no-fix'
+        });
+        return newMap;
+      });
+    }
+  };
+
+  // Handle no-fix for all remaining alerts - WITH DB WRITE
+  const handleNoFixAll = async () => {
+    // Get all unresolved alerts
+    const unresolvedAlerts = alerts.filter(alert => {
+      const alertKey = `${alert.empId}-${alert.date}`;
+      const existing = recommendationStates.get(alertKey);
+      return !existing || existing.decision_status === 'unresolved';
+    });
+
+    if (unresolvedAlerts.length === 0) return;
+
+    // Mark all as loading
+    setRecommendationStates(prev => {
+      const newMap = new Map(prev);
+      unresolvedAlerts.forEach(alert => {
+        const alertKey = `${alert.empId}-${alert.date}`;
+        const existing = newMap.get(alertKey);
+        newMap.set(alertKey, {
+          alertKey,
+          decision_status: 'unresolved',
+          candidates: existing?.candidates || [],
+          isLoading: true
+        });
       });
       return newMap;
     });
+
+    // =========================================================================
+    // DB INSERT: Bulk insert no-fix decisions to alert_replacements table
+    // =========================================================================
+    try {
+      const insertRecords = unresolvedAlerts.map(alert => ({
+        alert_id: alert.empId,
+        alert_name: alert.empName,
+        replacement_id: '',              // BLANK - no replacement selected
+        replacement_name: '',            // BLANK - no replacement selected
+        date: alert.date,
+        tail_num: alert.tailNumber || null,
+        created_at: '2022-04-30'         // Fixed demo date per requirement
+      }));
+
+      const { error: insertError } = await supabase
+        .from('alert_replacements')
+        .insert(insertRecords);
+
+      if (insertError) {
+        console.error('Error inserting no-fix records:', insertError);
+        // Update states with error
+        setRecommendationStates(prev => {
+          const newMap = new Map(prev);
+          unresolvedAlerts.forEach(alert => {
+            const alertKey = `${alert.empId}-${alert.date}`;
+            newMap.set(alertKey, {
+              alertKey,
+              decision_status: 'unresolved',
+              candidates: prev.get(alertKey)?.candidates || [],
+              isLoading: false,
+              message: 'Failed to save no-fix'
+            });
+          });
+          return newMap;
+        });
+      } else {
+        console.log('Successfully inserted no-fix records for all unresolved alerts');
+        // Update all states to no_fix
+        setRecommendationStates(prev => {
+          const newMap = new Map(prev);
+          unresolvedAlerts.forEach(alert => {
+            const alertKey = `${alert.empId}-${alert.date}`;
+            newMap.set(alertKey, {
+              alertKey,
+              decision_status: 'no_fix',
+              candidates: prev.get(alertKey)?.candidates || [],
+              isLoading: false,
+              message: 'Marked as no-fix'
+            });
+          });
+          return newMap;
+        });
+        // Trigger page reload to re-fetch data from DB (per requirement #14)
+        window.location.reload();
+      }
+    } catch (err) {
+      console.error('Exception inserting no-fix records:', err);
+      // Update states with error
+      setRecommendationStates(prev => {
+        const newMap = new Map(prev);
+        unresolvedAlerts.forEach(alert => {
+          const alertKey = `${alert.empId}-${alert.date}`;
+          newMap.set(alertKey, {
+            alertKey,
+            decision_status: 'unresolved',
+            candidates: prev.get(alertKey)?.candidates || [],
+            isLoading: false,
+            message: 'Error saving no-fix'
+          });
+        });
+        return newMap;
+      });
+    }
   };
 
   // Create a Set of empId-date keys that have alerts for quick lookup
@@ -2050,12 +2201,32 @@ export function WorkforcePlanning() {
                 <div className="space-y-4">
                   {/* Global actions */}
                   <div className="flex justify-end">
-                    <button
-                      onClick={handleNoFixAll}
-                      className="px-4 py-2 bg-gray-200 text-gray-700 font-medium rounded-lg hover:bg-gray-300 transition-colors"
-                    >
-                      No-fix to all
-                    </button>
+                    {(() => {
+                      // Check if any alert is currently loading
+                      const anyLoading = alerts.some(alert => {
+                        const alertKey = `${alert.empId}-${alert.date}`;
+                        return recommendationStates.get(alertKey)?.isLoading;
+                      });
+                      // Check if all unresolved
+                      const hasUnresolved = alerts.some(alert => {
+                        const alertKey = `${alert.empId}-${alert.date}`;
+                        const state = recommendationStates.get(alertKey);
+                        return !state || state.decision_status === 'unresolved';
+                      });
+                      return (
+                        <button
+                          onClick={handleNoFixAll}
+                          disabled={anyLoading || !hasUnresolved}
+                          className={`px-4 py-2 font-medium rounded-lg transition-colors ${
+                            anyLoading || !hasUnresolved
+                              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                          }`}
+                        >
+                          {anyLoading ? 'Saving...' : 'No-fix to all'}
+                        </button>
+                      );
+                    })()}
                   </div>
 
                   {/* Recommendation table */}
@@ -2176,20 +2347,27 @@ export function WorkforcePlanning() {
                                             });
                                           }
                                         }}
-                                        disabled={!pendingSelections.has(alertKey)}
+                                        disabled={!pendingSelections.has(alertKey) || state?.isLoading}
                                         className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                                          pendingSelections.has(alertKey)
-                                            ? 'bg-blue-600 text-white hover:bg-blue-700'
-                                            : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                          state?.isLoading
+                                            ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                            : pendingSelections.has(alertKey)
+                                              ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                              : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                                         }`}
                                       >
-                                        Assign & Notify
+                                        {state?.isLoading ? 'Saving...' : 'Assign & Notify'}
                                       </button>
                                       <button
                                         onClick={() => handleNoFix(alert)}
-                                        className="px-3 py-1 border border-gray-300 rounded text-xs font-medium text-gray-600 hover:bg-gray-100"
+                                        disabled={state?.isLoading}
+                                        className={`px-3 py-1 border rounded text-xs font-medium transition-colors ${
+                                          state?.isLoading
+                                            ? 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
+                                            : 'border-gray-300 text-gray-600 hover:bg-gray-100'
+                                        }`}
                                       >
-                                        No-Fix
+                                        {state?.isLoading ? 'Saving...' : 'No-Fix'}
                                       </button>
                                     </>
                                   )}
