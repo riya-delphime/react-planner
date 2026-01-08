@@ -107,8 +107,11 @@ function formatTtlLogin(ttlLogin: string | undefined): string {
 // =============================================================================
 interface RecommendationState {
   alertKey: string; // empId + date
-  status: 'pending' | 'fixed' | 'no-fix';
-  selectedReplacement?: ReplacementCandidate;
+  decision_status: 'unresolved' | 'assign_notify' | 'no_fix';
+  selected_replacement?: {
+    replacement_id: string;
+    replacement_name: string;
+  };
   candidates: ReplacementCandidate[];
   isLoading: boolean;
   message?: string;
@@ -809,7 +812,7 @@ export function WorkforcePlanning() {
       const newMap = new Map(prev);
       newMap.set(alertKey, {
         alertKey,
-        status: 'pending',
+        decision_status: 'unresolved',
         candidates: [],
         isLoading: true
       });
@@ -836,7 +839,7 @@ export function WorkforcePlanning() {
       const newMap = new Map(prev);
       newMap.set(alertKey, {
         alertKey,
-        status: 'pending',
+        decision_status: 'unresolved',
         candidates,
         isLoading: false
       });
@@ -867,8 +870,11 @@ export function WorkforcePlanning() {
       if (existing) {
         newMap.set(alertKey, {
           ...existing,
-          status: result.success ? 'fixed' : 'pending',
-          selectedReplacement: result.success ? replacement : undefined,
+          decision_status: result.success ? 'assign_notify' : 'unresolved',
+          selected_replacement: result.success ? {
+            replacement_id: replacement.empId,
+            replacement_name: replacement.empName
+          } : undefined,
           isLoading: false,
           message: result.message,
           isCoreTakenFromAssignment: result.isCoreTakenFromAssignment
@@ -910,7 +916,7 @@ export function WorkforcePlanning() {
       const newMap = new Map(prev);
       newMap.set(alertKey, {
         alertKey,
-        status: 'no-fix',
+        decision_status: 'no_fix',
         candidates: prev.get(alertKey)?.candidates || [],
         isLoading: false,
         message: 'Marked as no-fix'
@@ -926,10 +932,10 @@ export function WorkforcePlanning() {
       alerts.forEach(alert => {
         const alertKey = `${alert.empId}-${alert.date}`;
         const existing = newMap.get(alertKey);
-        if (!existing || existing.status === 'pending') {
+        if (!existing || existing.decision_status === 'unresolved') {
           newMap.set(alertKey, {
             alertKey,
-            status: 'no-fix',
+            decision_status: 'no_fix',
             candidates: existing?.candidates || [],
             isLoading: false,
             message: 'Marked as no-fix'
@@ -1037,26 +1043,26 @@ export function WorkforcePlanning() {
     alerts.forEach(alert => loadReplacementCandidates(alert));
   };
 
-  // Count resolved alerts (fixed or no-fix) - MUST be before early returns (React hooks rule)
+  // Count resolved alerts (assign_notify or no_fix) - MUST be before early returns (React hooks rule)
   const resolvedAlertCount = useMemo(() => {
     let count = 0;
     alerts.forEach(alert => {
       const alertKey = `${alert.empId}-${alert.date}`;
       const state = recommendationStates.get(alertKey);
-      if (state?.status === 'fixed' || state?.status === 'no-fix') {
+      if (state?.decision_status === 'assign_notify' || state?.decision_status === 'no_fix') {
         count++;
       }
     });
     return count;
   }, [alerts, recommendationStates]);
 
-  // Count fixed vs no-fix - MUST be before early returns (React hooks rule)
+  // Count assign_notify vs no_fix - MUST be before early returns (React hooks rule)
   const fixedCount = useMemo(() => {
     let count = 0;
     alerts.forEach(alert => {
       const alertKey = `${alert.empId}-${alert.date}`;
       const state = recommendationStates.get(alertKey);
-      if (state?.status === 'fixed') {
+      if (state?.decision_status === 'assign_notify') {
         count++;
       }
     });
@@ -2041,11 +2047,11 @@ export function WorkforcePlanning() {
                         {alerts.map(alert => {
                           const alertKey = `${alert.empId}-${alert.date}`;
                           const state = recommendationStates.get(alertKey);
-                          const isResolved = state?.status === 'fixed' || state?.status === 'no-fix';
+                          const isResolved = state?.decision_status === 'assign_notify' || state?.decision_status === 'no_fix';
 
                           // Filter out already-selected replacements from candidates
                           const availableCandidates = (state?.candidates || []).filter(
-                            c => !selectedReplacementEmpIds.has(c.empId) || state?.selectedReplacement?.empId === c.empId
+                            c => !selectedReplacementEmpIds.has(c.empId) || state?.selected_replacement?.replacement_id === c.empId
                           );
 
                           return (
@@ -2077,9 +2083,9 @@ export function WorkforcePlanning() {
                                   <div className="animate-pulse bg-gray-200 h-8 rounded"></div>
                                 ) : isResolved ? (
                                   <div className="text-sm">
-                                    {state?.status === 'fixed' ? (
+                                    {state?.decision_status === 'assign_notify' ? (
                                       <span className="text-green-600 font-medium">
-                                        Assigned: {state.selectedReplacement?.empName}
+                                        Assigned: {state.selected_replacement?.replacement_name}
                                       </span>
                                     ) : (
                                       <span className="text-gray-500">No-fix applied</span>
@@ -2123,7 +2129,7 @@ export function WorkforcePlanning() {
                               <td className="px-4 py-3">
                                 <div className="flex items-center justify-center gap-2">
                                   {isResolved ? (
-                                    state?.status === 'fixed' ? (
+                                    state?.decision_status === 'assign_notify' ? (
                                       <Check className="text-green-500" size={20} />
                                     ) : (
                                       <XCircle className="text-gray-400" size={20} />
