@@ -1519,7 +1519,7 @@ export function WorkforcePlanning() {
                               ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                               : zone === 'current'
                                 ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                : 'bg-green-50 text-green-700 hover:bg-green-100'
+                                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                           }
                         `}
                         onClick={() => setSelectedDate(dateStr)}

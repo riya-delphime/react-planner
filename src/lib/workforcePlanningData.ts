@@ -837,7 +837,7 @@ export const CELL_COLORS = {
   HOUSEKEEPING: { bg: 'bg-pink-200', text: 'text-red-700' },           // HSE-KPNG, etc.
   SHIFT: { bg: 'bg-blue-200', text: 'text-gray-900' },                 // 1, D, E, B1
   TAIL: { bg: 'bg-green-600', text: 'text-white font-bold' },          // Everything else (tails) - past/current
-  TAIL_FUTURE: { bg: 'bg-green-400', text: 'text-green-900 font-bold' },  // Future tail assignments (lighter green)
+  TAIL_FUTURE: { bg: 'bg-green-200', text: 'text-green-700 font-bold' },  // Future tail assignments (lighter green)
   TAIL_SIMULATED: { bg: 'bg-gray-500', text: 'text-white font-bold' },    // Simulated tails (contains '--')
 };
 
