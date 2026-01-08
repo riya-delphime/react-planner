@@ -916,10 +916,11 @@ export function extractAlertsForDate(
       const alertLower = alertMessage.toLowerCase();
 
       // Determine alert type from message content
+      // SK = Sick Leave (same as SL), AL = Annual Leave
       let alertType: 'no-show' | 'leave' | 'other' = 'other';
       if (alertLower.includes('no-show') || alertLower.includes('no show') || alertLower.includes('noshow')) {
         alertType = 'no-show';
-      } else if (alertLower.includes('leave') || alertLower.includes('al') || alertLower.includes('sl')) {
+      } else if (alertLower.includes('leave') || alertLower.includes('al') || alertLower.includes('sl') || alertLower.includes('sk') || alertLower === 'sick') {
         alertType = 'leave';
       }
 
