@@ -721,6 +721,154 @@ export function WorkforcePlanning() {
     return dateRange.filter(d => matchingDates.has(d));
   }, [dateRange, filteredGridData, searchQuery]);
 
+  // =============================================================================
+  // EXPIRED TRAININGS TRACKING (for future dates only)
+  // =============================================================================
+
+  // Compute first expiry date for each employee (used for opacity calculation)
+  const employeeFirstExpiryDate = useMemo(() => {
+    const firstExpiry = new Map<string, string>();
+    
+    if (gridData.length === 0) {
+      return firstExpiry;
+    }
+    
+    // Debug: Check if any cells have employeeTrainings data
+    let cellsWithTrainings = 0;
+    let totalCells = 0;
+    
+    // Iterate through all employees and their daily data
+    gridData.forEach(row => {
+      // Sort dates to find the earliest expiry date
+      const sortedDates = [...row.dailyData.keys()].sort();
+      
+      for (const dateStr of sortedDates) {
+        totalCells++;
+        const cellData = row.dailyData.get(dateStr);
+        if (cellData?.employeeTrainings && cellData.employeeTrainings.length > 0) {
+          cellsWithTrainings++;
+          if (!firstExpiry.has(row.empId)) {
+            firstExpiry.set(row.empId, dateStr);
+            break; // Found first expiry date for this employee
+          }
+        }
+      }
+    });
+    
+    return firstExpiry;
+  }, [gridData]);
+
+  // Compute detailed expired trainings map with expiry dates for each employee
+  const employeeExpiredTrainingsDetail = useMemo(() => {
+    const result = new Map<string, Map<string, string>>(); // empId -> (trainingName -> firstExpiryDate)
+    
+    if (gridData.length === 0) {
+      return result;
+    }
+    
+    // Track which trainings we've seen for each employee
+    const seenTrainings = new Map<string, Set<string>>();
+    
+    gridData.forEach(row => {
+      // Sort dates to track when each training first appears as expired
+      const sortedDates = [...row.dailyData.keys()].sort();
+      
+      for (const dateStr of sortedDates) {
+        const cellData = row.dailyData.get(dateStr);
+        if (cellData?.employeeTrainings && cellData.employeeTrainings.length > 0) {
+          const empId = row.empId;
+          
+          // Parse comma-separated trainings
+          const trainings = cellData.employeeTrainings.split(',').map(t => t.trim()).filter(t => t);
+          
+          if (!result.has(empId)) {
+            result.set(empId, new Map());
+            seenTrainings.set(empId, new Set());
+          }
+          
+          const empTrainings = result.get(empId)!;
+          const empSeen = seenTrainings.get(empId)!;
+          
+          // For each training, record its expiry date if we haven't seen it before
+          trainings.forEach(training => {
+            if (!empSeen.has(training)) {
+              empTrainings.set(training, dateStr);
+              empSeen.add(training);
+            }
+          });
+        }
+      }
+    });
+    
+    return result;
+  }, [gridData]);
+
+  // Helper function to get expired trainings tooltip text for an employee on a specific date
+  const getExpiredTrainingsTooltip = useCallback((empId: string, date: string): string => {
+    const empTrainings = employeeExpiredTrainingsDetail.get(empId);
+    if (!empTrainings || empTrainings.size === 0) {
+      return '';
+    }
+    
+    // Get all trainings that have expired by this date
+    const expiredByDate: Array<{ name: string; expiryDate: string }> = [];
+    empTrainings.forEach((expiryDate, trainingName) => {
+      if (expiryDate <= date) {
+        expiredByDate.push({ name: trainingName, expiryDate });
+      }
+    });
+    
+    if (expiredByDate.length === 0) {
+      return '';
+    }
+    
+    // Sort by expiry date
+    expiredByDate.sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
+    
+    // Format tooltip text
+    const lines = expiredByDate.map((t, index) => {
+      const dateObj = new Date(t.expiryDate);
+      const day = String(dateObj.getDate()).padStart(2, '0');
+      const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+      const formattedDate = `${day}/${month}`;
+      
+      // Shorten training names for compact display
+      let shortName = t.name;
+      if (t.name.includes(' - ')) {
+        const firstPart = t.name.split(' - ')[0].trim();
+        shortName = `${firstPart} Training`;
+      }
+      if (index === 0) {
+        return `${shortName} expires on ${formattedDate}`;
+      }
+      return `${shortName} on ${formattedDate}`;
+    });
+    
+    return lines.join('\n');
+  }, [employeeExpiredTrainingsDetail]);
+
+  // Helper function to calculate expired training overlay opacity for an employee on a specific date
+  // Returns 0 for past/current dates, only shows for future dates
+  const getExpiredTrainingOpacity = useCallback((empId: string, date: string): number => {
+    // Only show expired training overlay for FUTURE dates
+    if (date <= CURRENT_DATE) {
+      return 0;
+    }
+    
+    const firstExpiryDate = employeeFirstExpiryDate.get(empId);
+    if (!firstExpiryDate || date < firstExpiryDate) {
+      return 0;
+    }
+    
+    // Calculate opacity based on days since expiry (gradual increase)
+    const daysSinceExpiry = Math.floor(
+      (new Date(date).getTime() - new Date(firstExpiryDate).getTime()) / (1000 * 60 * 60 * 24)
+    );
+    
+    // Start at 0.15 opacity, increase by 0.08 every 3 days, max 0.45
+    return Math.min(0.45, 0.15 + Math.floor(daysSinceExpiry / 3) * 0.08);
+  }, [employeeFirstExpiryDate]);
+
   // When search results change, scroll to the first matching date (leftmost position)
   // This aligns the earliest assignment date with the Support column
   useEffect(() => {
@@ -1794,6 +1942,14 @@ export function WorkforcePlanning() {
                       // If override exists and is NO SHOW, treat as having alert styling
                       const shouldShowAsNoShow = override?.isNoShow || hasAlert;
 
+                      // Calculate expired training overlay opacity for future dates only
+                      const expiredTrainingOpacity = getExpiredTrainingOpacity(row.empId, dateStr);
+                      
+                      // Get expired trainings tooltip for hover
+                      const expiredTrainingsTooltip = expiredTrainingOpacity > 0 
+                        ? getExpiredTrainingsTooltip(row.empId, dateStr)
+                        : '';
+
                       return (
                         <div
                           key={dateStr}
@@ -1804,10 +1960,18 @@ export function WorkforcePlanning() {
                               : ''
                             }
                           `}
+                          title={expiredTrainingsTooltip || undefined}
                         >
+                          {/* Expired training red overlay - translucent gradient that increases over time (future dates only) */}
+                          {expiredTrainingOpacity > 0 && (
+                            <div 
+                              className="absolute inset-0 pointer-events-none z-[1]" 
+                              style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
+                            />
+                          )}
                           {/* Selected column highlight band */}
                           {isSelected && (
-                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none"></div>
+                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none z-[2]"></div>
                           )}
                           <div className="relative z-10">
                             {renderCell(displayValue, dateStr, searchMode && searchMode !== 'alert' ? searchQuery : undefined, shouldShowAsNoShow)}
@@ -1873,6 +2037,15 @@ export function WorkforcePlanning() {
             <div className="flex items-center gap-2">
               <div className={`w-4 h-4 ${NO_SHOW_COLORS.bg} rounded`}></div>
               <span className="text-xs font-medium text-slate-700">No Show</span>
+            </div>
+
+            {/* Expired Training - Red translucent overlay */}
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded relative overflow-hidden border border-gray-300">
+                <div className="absolute inset-0 bg-gray-100"></div>
+                <div className="absolute inset-0" style={{ backgroundColor: 'rgba(220, 38, 38, 0.3)' }}></div>
+              </div>
+              <span className="text-xs font-medium text-slate-700">Expired Training (Future dates)</span>
             </div>
 
             {/* Miscellaneous - Pink (last item) */}

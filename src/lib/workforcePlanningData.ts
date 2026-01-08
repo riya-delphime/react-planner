@@ -110,6 +110,7 @@ export interface PlanningMasterRecord {
   ttl_timestamp: string;
   alert: string;
   title: string;  // Role/title (e.g., 'CC', 'Tech', 'Engineer')
+  expired_trainings: string | null;  // Comma-separated list of expired trainings for this employee on this date
 }
 
 /**
@@ -156,6 +157,7 @@ export interface DailyCellData {
   isTail: boolean;
   rosterCode?: string; // Original roster code for legend matching
   alert?: string; // Alert message from planning_master_fn
+  employeeTrainings?: string; // Comma-separated list of expired trainings (from employee_trainings field)
 }
 
 /**
@@ -643,13 +645,16 @@ export function processGridData(
 
       // Capture alert from first record (should be same across all records for same emp+date)
       const alertValue = records && records.length > 0 ? (records[0].alert || '') : '';
+      // Capture expired_trainings from first record (same for all records for same emp+date)
+      const trainingsValue = records && records.length > 0 ? (records[0].expired_trainings || '') : '';
 
       dailyData.set(dateStr, {
         displayValue,
         isRosterLike: isRoster,
         isTail,
         rosterCode,
-        alert: alertValue
+        alert: alertValue,
+        employeeTrainings: trainingsValue
       });
     });
 
