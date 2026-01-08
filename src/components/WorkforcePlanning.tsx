@@ -175,6 +175,30 @@ export function WorkforcePlanning() {
       source: 'ai' | 'legacy';
     }>>([]);  
 
+  // Compute "today" as now() in user's timezone, normalized to date (no time)
+  // This is used to determine if alerts should be enabled (only for dates <= today)
+  // 
+  // NOTE: For demo/testing with 2022 data, we use CURRENT_DATE as reference.
+  // In production with real data, switch to the commented real-time version below.
+  const today = useMemo(() => {
+    // ═══════════════════════════════════════════════════════════════════
+    // DEMO MODE: Use demo data's "today" (2022-04-30) for testing
+    // This allows testing future date behavior with the demo dataset
+    // ═══════════════════════════════════════════════════════════════════
+    return CURRENT_DATE; // Demo data's reference date: 2022-04-30
+    
+    // const now = new Date();
+    // const year = now.getFullYear();
+    // const month = String(now.getMonth() + 1).padStart(2, '0');
+    // const day = String(now.getDate()).padStart(2, '0');
+    // return `${year}-${month}-${day}`;
+  }, []);
+
+  // Check if selected date is in the future (alerts disabled for future dates)
+  const isFutureDateSelected = useMemo(() => {
+    return selectedDate > today;
+  }, [selectedDate, today]);
+
   // Refs for scroll synchronization
   const dateHeaderRef = useRef<HTMLDivElement>(null);
   const selectedColumnRef = useRef<HTMLDivElement>(null);
@@ -1257,8 +1281,22 @@ export function WorkforcePlanning() {
 
           {/* ================================================================== */}
           {/* ALERTS PANEL */}
+          {/* Alerts are enabled only when Selected Date ≤ Today */}
+          {/* For future dates, show disabled/greyed-out ribbon */}
           {/* ================================================================== */}
-          {alerts.length > 0 && (
+          {isFutureDateSelected ? (
+            /* Disabled state for future dates - no alerts functionality */
+            <div className="mt-4 rounded-lg p-3 flex items-center justify-between border-2 bg-gray-100 border-gray-300 opacity-60 cursor-not-allowed">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="text-gray-400" size={24} />
+                <span className="font-semibold text-gray-500">
+                  {formatDateForHeader(selectedDate)}: Alerts not available for future dates
+                </span>
+              </div>
+              {/* No View Details button for future dates */}
+            </div>
+          ) : alerts.length > 0 && (
+            /* Active state for current/past dates with alerts */
             <div className={`mt-4 rounded-lg p-3 flex items-center justify-between border-2 ${
               allAlertsResolved
                 ? 'bg-blue-50 border-blue-300'
