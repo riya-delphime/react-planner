@@ -15,7 +15,7 @@ export interface Database {
     Tables: Record<string, unknown>
     Views: Record<string, unknown>
     Functions: {
-      get_roster_with_scenario_overrides: {
+      get_roster_with_scenario_overrides_with_trainings: {
         Args: {
           scenario_name: string
         }
@@ -31,6 +31,7 @@ export interface Database {
           is_tail: boolean
           bay: string
           source: 'roster' | 'scenario' | 'override'
+          expired_trainings: string | null
         }[]
       }
     }
