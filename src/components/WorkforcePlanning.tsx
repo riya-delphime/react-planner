@@ -906,6 +906,33 @@ export function WorkforcePlanning() {
         });
         return newMap;
       });
+
+      // =========================================================================
+      // DB INSERT: Persist assignment to alert_replacements table
+      // =========================================================================
+      try {
+        const { error: insertError } = await supabase
+          .from('alert_replacements')
+          .insert({
+            alert_id: alert.empId,
+            alert_name: alert.empName,
+            replacement_id: replacement.empId,
+            replacement_name: replacement.empName,
+            date: alert.date,
+            tail_num: alert.tailNumber || null,
+            created_at: '2022-04-30'  // Fixed demo date per requirement
+          });
+
+        if (insertError) {
+          console.error('Error inserting into alert_replacements:', insertError);
+        } else {
+          console.log('Successfully inserted into alert_replacements');
+          // Trigger page reload to re-fetch data from DB (per requirement #9)
+          window.location.reload();
+        }
+      } catch (err) {
+        console.error('Exception inserting alert_replacement:', err);
+      }
     }
   };
 
