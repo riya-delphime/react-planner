@@ -189,8 +189,14 @@ export function WorkforcePlanning() {
   // Bay Occupancy state
   const [bayAllocations, setBayAllocations] = useState<BayAllocation[]>([]);
   // NOTE: Bay Occupancy uses `dateRange` from Assignments & Roster Plan for consistency
-  const [selectedBayDates, setSelectedBayDates] = useState<Set<string>>(new Set());
+  // REMOVED: selectedBayDates - now reusing selectedDate for both charts (DRY principle)
   const [yellowHighlightedBayRow, setYellowHighlightedBayRow] = useState<number | null>(null);
+  
+  // Multi-date focus: When user clicks on a tail in Bay chart, highlight ALL dates of that tail's allocation
+  const [selectedTailAllocation, setSelectedTailAllocation] = useState<{
+    tail: string;
+    dates: string[];
+  } | null>(null);
   const [isBayDataLoading, setIsBayDataLoading] = useState(false);
 
   // Employee detail drawer state
@@ -2096,9 +2102,9 @@ export function WorkforcePlanning() {
                     <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-medium">
                       {filteredGridData.length} employees
                     </span>
-                    <span>worked on "{searchQuery.toUpperCase()}"</span>
-                    <span className="text-gray-400">•</span>
-                    <span>Showing {formatDateForHeader(filteredDateRange[0])} - {formatDateForHeader(filteredDateRange[filteredDateRange.length - 1])}</span>
+                    {/* <span>worked on "{searchQuery.toUpperCase()}"</span> */}
+                    {/* <span className="text-gray-400">•</span> */}
+                    {/* <span>Showing {formatDateForHeader(filteredDateRange[0])} - {formatDateForHeader(filteredDateRange[filteredDateRange.length - 1])}</span> */}
                   </>
                 )}
                 {searchMode === 'employee' && (
@@ -2267,6 +2273,8 @@ export function WorkforcePlanning() {
                 <div className="flex">
                   {filteredDateRange.map((dateStr) => {
                     const isSelected = dateStr === selectedDate;
+                    // Multi-date focus: Check if this date is part of selected tail allocation
+                    const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
                     const zone = getDateZone(dateStr, CURRENT_DATE);
 
                     return (
@@ -2278,18 +2286,25 @@ export function WorkforcePlanning() {
                           cursor-pointer transition-all relative
                           ${isSelected
                             ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                            : zone === 'past'
-                              ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                              : zone === 'current'
-                                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                            : isInTailAllocation
+                              ? 'bg-emerald-500 text-white ring-2 ring-emerald-600 ring-inset z-10'
+                              : zone === 'past'
+                                ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                                : zone === 'current'
+                                  ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
                           }
                         `}
-                        onClick={() => setSelectedDate(dateStr)}
-                        title={`Click to select ${formatDateForHeader(dateStr)}`}
+                        onClick={() => {
+                          setSelectedDate(dateStr);
+                          // Clear tail allocation AND reset filter when clicking directly on date header
+                          setSelectedTailAllocation(null);
+                          setSearchQuery('');  // Reset filter to show all employees
+                        }}
+                        title={`Click to select ${formatDateForHeader(dateStr)}${isInTailAllocation ? ` (${selectedTailAllocation?.tail} visit)` : ''}`}
                       >
                         {formatDateForHeader(dateStr)}
-                        {dateStr === CURRENT_DATE && !isSelected && (
+                        {dateStr === CURRENT_DATE && !isSelected && !isInTailAllocation && (
                           <div className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-amber-500 rounded-full"></div>
                         )}
                       </div>
@@ -2312,6 +2327,8 @@ export function WorkforcePlanning() {
                     {filteredDateRange.map((dateStr) => {
                       const cellData = row.dailyData.get(dateStr);
                       const isSelected = dateStr === selectedDate;
+                      // Multi-date focus: Check if this date is part of selected tail allocation
+                      const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
                       // Check if this cell has an alert (no-show or leave)
                       const cellKey = `${row.empId}-${dateStr}`;
                       const hasAlert = alertCellKeys.has(cellKey);
@@ -2337,7 +2354,9 @@ export function WorkforcePlanning() {
                             flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center
                             ${isSelected
                               ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset'
-                              : ''
+                              : isInTailAllocation
+                                ? 'bg-emerald-100/70 ring-1 ring-emerald-400 ring-inset'
+                                : ''
                             }
                           `}
                           title={expiredTrainingsTooltip || undefined}
@@ -2348,6 +2367,10 @@ export function WorkforcePlanning() {
                               className="absolute inset-0 pointer-events-none z-[1]" 
                               style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
                             />
+                          )}
+                          {/* Multi-date tail allocation highlight band */}
+                          {isInTailAllocation && !isSelected && (
+                            <div className="absolute inset-0 bg-emerald-500/15 pointer-events-none z-[2]"></div>
                           )}
                           {/* Selected column highlight band */}
                           {isSelected && (
@@ -2705,23 +2728,12 @@ export function WorkforcePlanning() {
                         {/* Row 2: Date columns */}
                         <div className="flex">
                           {dateRange.map((date, idx) => {
-                            const isBaySelected = selectedBayDates.has(date);
-                            const isToday = date === CURRENT_DATE;
-                            return (
-                              <div
-                                key={date}
-                                onClick={() => {
-                                  setSelectedDate(date);
-                                  setSelectedBayDates(prev => {
-                                    const newSet = new Set(prev);
-                                    if (newSet.has(date)) {
-                                      newSet.delete(date);
-                                    } else {
-                                      newSet.add(date);
-                                    }
-                                    return newSet;
-                                  });
-                                }}
+                                            const isBaySelected = date === selectedDate;  // Reusing selectedDate state
+                                            const isToday = date === CURRENT_DATE;
+                                            return (
+                                              <div
+                                                key={date}
+                                                onClick={() => setSelectedDate(date)}  // Simplified - single state update
                                 className={`
                                   flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
                                   cursor-pointer transition-all relative select-none
@@ -2797,11 +2809,14 @@ export function WorkforcePlanning() {
                                   const showLabel = isFirstInSpan(bayNum, idx, tail);
                                   const span = showLabel && tail ? getContinuousSpan(bayNum, idx, tail) : 0;
                                   
-                                  const isBayDateSelected = selectedBayDates.has(date);
+                                  const isBayDateSelected = date === selectedDate;  // Reusing selectedDate state
                                   const isToday = date === CURRENT_DATE;
                                   
                                   // Check if simulated aircraft (2+ hyphens)
                                   const isSimulatedAircraft = tail ? (tail.match(/-/g) || []).length >= 2 : false;
+                                  
+                                  // Multi-date focus: Check if this cell is part of the selected tail allocation
+                                  const isSelectedTail = selectedTailAllocation?.tail === tail && selectedTailAllocation?.dates.includes(date);
 
                                   return (
                                     <div
@@ -2810,14 +2825,25 @@ export function WorkforcePlanning() {
                                         setSelectedDate(date);
                                         if (allocation) {
                                           setSearchQuery(allocation.aircraft.aircraft_reg);
+                                          // Multi-date focus: Store ALL dates of this tail's allocation
+                                          setSelectedTailAllocation({
+                                            tail: allocation.aircraft.aircraft_reg,
+                                            dates: allocation.dates
+                                          });
+                                        } else {
+                                          // Clicked on empty cell - clear tail selection AND reset filter
+                                          setSelectedTailAllocation(null);
+                                          setSearchQuery('');  // Reset filter to show all employees
                                         }
                                       }}
                                       className={`
                                         flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center cursor-pointer select-none
                                         ${allocation
-                                          ? isSimulatedAircraft
-                                            ? 'bg-orange-400 hover:bg-orange-500'
-                                            : 'bg-blue-500 hover:bg-blue-600'
+                                          ? isSelectedTail
+                                            ? 'bg-emerald-600 hover:bg-emerald-700 ring-2 ring-emerald-400 ring-inset'
+                                            : isSimulatedAircraft
+                                              ? 'bg-orange-400 hover:bg-orange-500'
+                                              : 'bg-blue-500 hover:bg-blue-600'
                                           : isBayDateSelected 
                                             ? 'bg-blue-100/70' 
                                             : ''
@@ -2860,7 +2886,7 @@ export function WorkforcePlanning() {
                 </div>
 
                 {/* Legend Footer */}
-                <div className="p-3 flex gap-6 text-sm border-t-2 border-gray-800">
+                <div className="p-3 flex gap-6 text-sm border-t-2 border-gray-800 flex-wrap">
                   <div className="flex items-center gap-2">
                     <div className="w-4 h-4 bg-blue-500 rounded"></div>
                     <span className="font-medium">Scheduled Aircraft</span>
@@ -2868,6 +2894,10 @@ export function WorkforcePlanning() {
                   <div className="flex items-center gap-2">
                     <div className="w-4 h-4 bg-orange-400 rounded"></div>
                     <span className="font-medium">Simulated Aircraft</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-emerald-600 ring-2 ring-emerald-400 rounded"></div>
+                    <span className="font-medium">Selected Tail (Multi-date)</span>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="w-4 h-4 bg-yellow-400 ring-2 ring-yellow-600 rounded"></div>
