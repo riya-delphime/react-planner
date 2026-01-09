@@ -20,7 +20,7 @@
  */
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, AlertTriangle, Search, X, Check, XCircle, CheckCircle2, RotateCcw, ArrowUpDown, ArrowUp, ArrowDown, User, Settings, Play } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, AlertTriangle, Search, X, Check, XCircle, CheckCircle2, RotateCcw, ArrowUpDown, ArrowUp, ArrowDown, User, Settings, Play, Building2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { EmployeeDetailDrawer } from './EmployeeDetailDrawer';
 import {
@@ -45,6 +45,25 @@ import {
   type TailAlertSummary,
   type ReplacementCandidate,
 } from '../lib/workforcePlanningData';
+
+// BAY OCCUPANCY INTERFACES
+interface AircraftSchedule {
+  id: string;
+  aircraft_reg: string;
+  customer: string;
+  fleet: string;
+  check_type: string;
+  induct_date: string;
+  ets_date: string;
+  cert_eng_req: number;
+  bay_assignment: string;
+}
+
+interface BayAllocation {
+  bayNumber: number;
+  aircraft: AircraftSchedule;
+  dates: string[];
+}
 
 /**
  * Format TTL Login timestamp - strip date portion, show only time in AM/PM format
@@ -164,6 +183,16 @@ export function WorkforcePlanning() {
   // Role column sorting state: null (unsorted), 'asc', or 'desc'
   const [roleSortDirection, setRoleSortDirection] = useState<'asc' | 'desc' | null>(null);
 
+  // Bottom pane tab state: 'overview' or 'bayOccupancy'
+  const [bottomPaneTab, setBottomPaneTab] = useState<'overview' | 'bayOccupancy'>('overview');
+
+  // Bay Occupancy state
+  const [bayAllocations, setBayAllocations] = useState<BayAllocation[]>([]);
+  // NOTE: Bay Occupancy uses `dateRange` from Assignments & Roster Plan for consistency
+  const [selectedBayDates, setSelectedBayDates] = useState<Set<string>>(new Set());
+  const [yellowHighlightedBayRow, setYellowHighlightedBayRow] = useState<number | null>(null);
+  const [isBayDataLoading, setIsBayDataLoading] = useState(false);
+
   // Employee detail drawer state
   const [showEmployeeDrawer, setShowEmployeeDrawer] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<WorkforceGridRow | null>(null);
@@ -171,6 +200,7 @@ export function WorkforcePlanning() {
     // Settings popup state for Active Scenario
     const [showSettingsPopup, setShowSettingsPopup] = useState(false);
     const [activeScenario, setActiveScenario] = useState<string>('');
+    const [activeScenarioName, setActiveScenarioName] = useState<string>(''); // Store the actual name from DB
     const [isLoadingScenario, setIsLoadingScenario] = useState(false);
     const [savedScenarios, setSavedScenarios] = useState<Array<{
       id: string;
@@ -213,6 +243,10 @@ export function WorkforcePlanning() {
   const dateColumnsBodyRef = useRef<HTMLDivElement>(null);
   // Track if initial scroll to CURRENT_DATE has been done
   const initialScrollDoneRef = useRef<boolean>(false);
+  
+  // Refs for Bay Occupancy chart scroll sync
+  const bayHeaderRef = useRef<HTMLDivElement>(null);
+  const bayBodyRef = useRef<HTMLDivElement>(null);
 
   // Load data on mount
   useEffect(() => {
@@ -234,6 +268,12 @@ export function WorkforcePlanning() {
       .select('id, name, created_at')
       .order('created_at', { ascending: false });
 
+    // Also load from scenario_master_view (like PlanningScenarioVisualizer)
+    const { data: masterViewData } = await supabase
+      .from('scenario_master_view')
+      .select('scenario_name')
+      .order('scenario_name');
+
     const allScenarios: Array<{
       id: string;
       scenario_name: string;
@@ -242,29 +282,54 @@ export function WorkforcePlanning() {
       source: 'ai' | 'legacy';
     }> = [];
 
+    // Track unique scenario names to avoid duplicates
+    const addedScenarioNames = new Set<string>();
+
     // Add AI scenarios
     if (aiData) {
       aiData.forEach((s: any) => {
-        allScenarios.push({
-          id: s.id,
-          scenario_name: s.scenario_name,
-          created_at: s.created_at,
-          status: s.status || 'draft',
-          source: 'ai',
-        });
+        if (!addedScenarioNames.has(s.scenario_name)) {
+          addedScenarioNames.add(s.scenario_name);
+          allScenarios.push({
+            id: s.id,
+            scenario_name: s.scenario_name,
+            created_at: s.created_at,
+            status: s.status || 'draft',
+            source: 'ai',
+          });
+        }
       });
     }
 
     // Add legacy scenarios
     if (legacyData) {
       legacyData.forEach((s: any) => {
-        allScenarios.push({
-          id: `legacy_${s.id}`,
-          scenario_name: s.name,
-          created_at: s.created_at,
-          status: 'legacy',
-          source: 'legacy',
-        });
+        if (!addedScenarioNames.has(s.name)) {
+          addedScenarioNames.add(s.name);
+          allScenarios.push({
+            id: `legacy_${s.id}`,
+            scenario_name: s.name,
+            created_at: s.created_at,
+            status: 'legacy',
+            source: 'legacy',
+          });
+        }
+      });
+    }
+
+    // Add scenarios from scenario_master_view (if not already added)
+    if (masterViewData) {
+      masterViewData.forEach((s: any) => {
+        if (s.scenario_name && !addedScenarioNames.has(s.scenario_name)) {
+          addedScenarioNames.add(s.scenario_name);
+          allScenarios.push({
+            id: s.scenario_name, // Use scenario_name as ID for master view scenarios
+            scenario_name: s.scenario_name,
+            created_at: new Date().toISOString(),
+            status: 'active',
+            source: 'ai', // Treat as AI scenario
+          });
+        }
       });
     }
 
@@ -284,6 +349,9 @@ export function WorkforcePlanning() {
       if (activeError) {
         console.log('[WorkforcePlanning] No active scenario found or error:', activeError.message);
       } else if (activeScenarioData?.scenario_name) {
+        // Store the active scenario name from DB
+        setActiveScenarioName(activeScenarioData.scenario_name);
+        
         // Find matching scenario in our loaded list
         const matchingScenario = allScenarios.find(
           s => s.scenario_name === activeScenarioData.scenario_name
@@ -301,7 +369,17 @@ export function WorkforcePlanning() {
           
           console.log('[WorkforcePlanning] Default scenario loaded successfully:', matchingScenario.scenario_name);
         } else {
-          console.log('[WorkforcePlanning] Active scenario from DB not found in available scenarios:', activeScenarioData.scenario_name);
+          // Even if not in list, try to load the scenario data
+          console.log('[WorkforcePlanning] Active scenario from DB, loading directly:', activeScenarioData.scenario_name);
+          try {
+            const { gridData: data, dateRange: dates } = await loadScenarioData(activeScenarioData.scenario_name, CURRENT_DATE);
+            setGridData(data);
+            setDateRange(dates);
+            calculateUtilization(data, dates, CURRENT_DATE);
+            setActiveScenario(activeScenarioData.scenario_name); // Use name as ID
+          } catch (loadErr) {
+            console.error('[WorkforcePlanning] Error loading scenario data:', loadErr);
+          }
         }
       }
     } catch (err) {
@@ -414,11 +492,41 @@ export function WorkforcePlanning() {
 
       // Calculate utilization KPIs based on loaded data (for initial load with CURRENT_DATE)
       calculateUtilization(data, dates, CURRENT_DATE);
+      
+      // Scroll to CURRENT_DATE after data loads
+      scrollToCurrentDate(dates);
     } catch (err) {
       console.error('Failed to load workforce planning data:', err);
       setError('Failed to load data. Please try again.');
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  // Helper function to scroll to CURRENT_DATE position
+  function scrollToCurrentDate(dates: string[]) {
+    const selectedIndex = dates.indexOf(CURRENT_DATE);
+    if (selectedIndex !== -1) {
+      const columnWidth = 80;
+      const scrollLeft = selectedIndex * columnWidth;
+      
+      // Use setTimeout to ensure DOM has updated
+      setTimeout(() => {
+        if (dateColumnsBodyRef.current) {
+          dateColumnsBodyRef.current.scrollTo({ left: scrollLeft, behavior: 'instant' });
+        }
+        if (dateHeaderRef.current) {
+          dateHeaderRef.current.scrollTo({ left: scrollLeft, behavior: 'instant' });
+        }
+        // Also sync Bay Occupancy if it's visible
+        if (bayBodyRef.current) {
+          bayBodyRef.current.scrollTo({ left: scrollLeft, behavior: 'instant' });
+        }
+        if (bayHeaderRef.current) {
+          bayHeaderRef.current.scrollTo({ left: scrollLeft, behavior: 'instant' });
+        }
+        console.log('[Scroll] Scrolled to CURRENT_DATE:', CURRENT_DATE, 'at scrollLeft:', scrollLeft);
+      }, 100);
     }
   }
 
@@ -442,8 +550,15 @@ export function WorkforcePlanning() {
       setGridData(data);
       setDateRange(dates);
 
+      // Update the active scenario name for display
+      setActiveScenarioName(scenarioName);
+
       // Calculate utilization KPIs based on scenario data
       calculateUtilization(data, dates, selectedDate);
+
+      // Reset initial scroll flag and scroll to CURRENT_DATE
+      initialScrollDoneRef.current = false;
+      scrollToCurrentDate(dates);
 
       console.log('[Scenario] Successfully loaded scenario data:', scenarioName);
     } catch (err) {
@@ -457,8 +572,159 @@ export function WorkforcePlanning() {
   // Clear active scenario and reload default data
   async function clearActiveScenario() {
     setActiveScenario('');
+    setActiveScenarioName(''); // Clear the scenario name
+    // Reset initial scroll flag so it scrolls to CURRENT_DATE after reload
+    initialScrollDoneRef.current = false;
     await loadData();
   }
+
+  // BAY OCCUPANCY DATA LOADING
+  // Allocate bays based on aircraft schedules
+  function allocateBaysForView(schedules: AircraftSchedule[], dateRangeForBays: string[]): BayAllocation[] {
+    const allocations: BayAllocation[] = [];
+    const bayOccupancy: Map<number, string[]> = new Map();
+
+    // Initialize all 13 bays
+    for (let i = 1; i <= 13; i++) {
+      bayOccupancy.set(i, []);
+    }
+
+    // Sort schedules by induct_date to process earliest first
+    const sortedSchedules = [...schedules].sort((a, b) => 
+      new Date(a.induct_date).getTime() - new Date(b.induct_date).getTime()
+    );
+
+    sortedSchedules.forEach(schedule => {
+      const scheduleDates = dateRangeForBays.filter(date => date >= schedule.induct_date && date <= schedule.ets_date);
+      
+      if (scheduleDates.length === 0) return;
+
+      // Check if schedule already has a bay assignment
+      const bayMatch = schedule.bay_assignment.match(/Bay (\d+)/i);
+      let assignedBay = bayMatch ? parseInt(bayMatch[1]) : 0;
+
+      // If no explicit assignment, find an available bay
+      if (assignedBay === 0) {
+        for (let bay = 1; bay <= 13; bay++) {
+          const occupiedDates = bayOccupancy.get(bay) || [];
+          const hasConflict = scheduleDates.some(date => occupiedDates.includes(date));
+          
+          if (!hasConflict) {
+            assignedBay = bay;
+            break;
+          }
+        }
+      }
+
+      // If we found a bay, create the allocation
+      if (assignedBay > 0) {
+        const currentOccupied = bayOccupancy.get(assignedBay) || [];
+        bayOccupancy.set(assignedBay, [...currentOccupied, ...scheduleDates]);
+
+        allocations.push({
+          bayNumber: assignedBay,
+          aircraft: schedule,
+          dates: scheduleDates,
+        });
+      }
+    });
+
+    return allocations;
+  }
+
+  // Load bay occupancy data from visit_planning_combined
+  // Uses `dateRange` from Assignments & Roster Plan for date consistency
+  async function loadBayOccupancyData() {
+    // Wait for dateRange to be available
+    if (dateRange.length === 0) {
+      console.log('[Bay Occupancy] Waiting for dateRange to be available...');
+      return;
+    }
+
+    setIsBayDataLoading(true);
+    
+    try {
+      const { data: visitPlanningData } = await supabase
+        .from('visit_planning_combined')
+        .select('*')
+        .order('induction_date', { ascending: true });
+
+      if (!visitPlanningData || visitPlanningData.length === 0) {
+        console.log('[Bay Occupancy] No visit planning data found');
+        setBayAllocations([]);
+        return;
+      }
+
+      // Filter for ongoing and upcoming visits
+      const todayDate = new Date(CURRENT_DATE);
+      const thirtyDaysAgo = new Date(todayDate);
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      const filteredVisits = visitPlanningData.filter((visit: any) => {
+        const inductionDate = new Date(visit.induction_date);
+        const etsDate = new Date(visit.ets_date);
+        return etsDate >= todayDate || inductionDate >= thirtyDaysAgo;
+      });
+
+      if (filteredVisits.length === 0) {
+        console.log('[Bay Occupancy] No ongoing or upcoming visits found');
+        setBayAllocations([]);
+        return;
+      }
+
+      // Convert to AircraftSchedule format
+      const schedules: AircraftSchedule[] = filteredVisits.map((visit: any, idx: number) => ({
+        id: `visit-${idx}`,
+        aircraft_reg: visit.tail_num,
+        customer: visit.customer || '',
+        fleet: visit.aircraft || '',
+        check_type: visit.check_type || '',
+        induct_date: visit.induction_date,
+        ets_date: visit.ets_date,
+        cert_eng_req: visit.min_engineers || 0,
+        bay_assignment: visit.bay || '',
+      }));
+
+      // Use dateRange from Assignments & Roster Plan for consistency
+      // This ensures both charts show the same date columns
+      const bays = allocateBaysForView(schedules, dateRange);
+      setBayAllocations(bays);
+
+      console.log('[Bay Occupancy] Loaded', bays.length, 'bay allocations using shared dateRange with', dateRange.length, 'dates');
+    } catch (err) {
+      console.error('[Bay Occupancy] Error loading data:', err);
+      setBayAllocations([]);
+    } finally {
+      setIsBayDataLoading(false);
+    }
+  }
+
+  // Load bay data when switching to Bay Occupancy tab (and dateRange is ready)
+  useEffect(() => {
+    if (bottomPaneTab === 'bayOccupancy' && bayAllocations.length === 0 && dateRange.length > 0) {
+      loadBayOccupancyData();
+    }
+  }, [bottomPaneTab, dateRange]);
+
+  // Sync Bay Occupancy scroll position with Assignments & Roster Plan when tab switches
+  useEffect(() => {
+    if (bottomPaneTab === 'bayOccupancy') {
+      // Wait for DOM to render, then sync scroll position multiple times to ensure it works
+      const syncScroll = () => {
+        if (dateColumnsBodyRef.current && bayBodyRef.current && bayHeaderRef.current) {
+          const scrollLeft = dateColumnsBodyRef.current.scrollLeft;
+          bayBodyRef.current.scrollLeft = scrollLeft;
+          bayHeaderRef.current.scrollLeft = scrollLeft;
+          console.log('[Bay Scroll Sync] Synced to scrollLeft:', scrollLeft);
+        }
+      };
+      
+      // Try multiple times with increasing delays to ensure DOM is ready
+      requestAnimationFrame(syncScroll);
+      setTimeout(syncScroll, 50);
+      setTimeout(syncScroll, 150);
+    }
+  }, [bottomPaneTab, bayAllocations]);
 
   // Recalculate utilization when selected date changes
   useEffect(() => {
@@ -979,11 +1245,19 @@ export function WorkforcePlanning() {
   }, [dateRange]);
 
 
-  // Handle horizontal scroll sync between header and body
+  // Handle horizontal scroll sync between header and body + Bay Occupancy chart
   const handleHorizontalScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const scrollLeft = e.currentTarget.scrollLeft;
+    // Sync Assignments & Roster header
     if (dateHeaderRef.current) {
       dateHeaderRef.current.scrollLeft = scrollLeft;
+    }
+    // CROSS-CHART SYNC: Also sync Bay Occupancy chart
+    if (bayHeaderRef.current) {
+      bayHeaderRef.current.scrollLeft = scrollLeft;
+    }
+    if (bayBodyRef.current) {
+      bayBodyRef.current.scrollLeft = scrollLeft;
     }
   }, []);
 
@@ -1009,6 +1283,22 @@ export function WorkforcePlanning() {
     handleHorizontalScroll(e);
     handleVerticalScroll(e);
   }, [handleHorizontalScroll, handleVerticalScroll]);
+
+  // Bay Occupancy chart scroll handler - syncs header + Assignments & Roster chart
+  const handleBayBodyScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const scrollLeft = e.currentTarget.scrollLeft;
+    // Sync Bay header
+    if (bayHeaderRef.current) {
+      bayHeaderRef.current.scrollLeft = scrollLeft;
+    }
+    // CROSS-CHART SYNC: Also sync Assignments & Roster chart
+    if (dateHeaderRef.current) {
+      dateHeaderRef.current.scrollLeft = scrollLeft;
+    }
+    if (dateColumnsBodyRef.current) {
+      dateColumnsBodyRef.current.scrollLeft = scrollLeft;
+    }
+  }, []);
 
   // Navigate dates with arrows
   const navigateDate = (direction: 'prev' | 'next') => {
@@ -1638,20 +1928,28 @@ export function WorkforcePlanning() {
 
             {/* Date Selector */}
             <div className="flex items-center gap-6">
-              <div>
-              {activeScenario && (
-                <span className="text-sm font-semibold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
-                  Active: {savedScenarios.find(s => s.id === activeScenario)?.scenario_name || activeScenario}
+              <div className="flex items-center gap-2">
+                {/* Active Scenario Badge - Shows scenario name from DB */}
+                <span className={`text-sm font-semibold px-3 py-1 rounded-full ${
+                  activeScenarioName || activeScenario
+                    ? 'text-emerald-700 bg-emerald-100' 
+                    : 'text-slate-600 bg-slate-100'
+                }`}>
+                  {activeScenarioName 
+                    ? `Active: ${activeScenarioName}`
+                    : activeScenario 
+                      ? `Active: ${savedScenarios.find(s => s.id === activeScenario)?.scenario_name || activeScenario}`
+                      : 'No Scenario Selected'
+                  }
                 </span>
-              )}
-              {/* Settings Icon */}
-              <button
-                className="p-2 hover:bg-slate-200 rounded-full transition-colors"
-                onClick={() => setShowSettingsPopup(true)}
-                title="Active Scenario Settings"
-              >
-                <Settings className="w-5 h-5 text-slate-600" />
-              </button>
+                {/* Settings Icon */}
+                <button
+                  className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+                  onClick={() => setShowSettingsPopup(true)}
+                  title="Active Scenario Settings"
+                >
+                  <Settings className="w-5 h-5 text-slate-600" />
+                </button>
               </div>
               {/* Date Navigation */}
               <div className="flex items-center gap-2 bg-white rounded-lg px-2 py-1 shadow-sm border border-slate-200">
@@ -2139,12 +2437,49 @@ export function WorkforcePlanning() {
         </div>
       </div>
 
-      {/* ================================================================== */}
-      {/* BOTTOM PANE: Assignment Overview */}
-      {/* ================================================================== */}
-      {(() => {
-        // Aggregate assignments by tail for the selected date
-        const assignmentOverview = aggregateAssignmentsByTail(gridData, selectedDate);
+      {/* BOTTOM PANE: Toggle Container (Overview / Bay Occupancy) */}
+      <div className="bg-white border-2 border-gray-800 rounded-lg shadow-lg overflow-hidden">
+        {/* Tab Toggle Header */}
+        <div className="bg-gradient-to-r from-slate-100 to-slate-50 border-b-2 border-gray-800 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1 bg-gray-200 rounded-lg p-1">
+              <button
+                onClick={() => setBottomPaneTab('overview')}
+                className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
+                  bottomPaneTab === 'overview'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 hover:bg-gray-100'
+                }`}
+              >
+                Overview
+              </button>
+              <button
+                onClick={() => setBottomPaneTab('bayOccupancy')}
+                className={`px-4 py-2 text-sm font-semibold rounded-md transition-all ${
+                  bottomPaneTab === 'bayOccupancy'
+                    ? 'bg-white text-slate-800 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-700 hover:bg-gray-100'
+                }`}
+              >
+                Bay Occupancy
+              </button>
+            </div>
+            <p className="text-sm text-slate-500">
+              {bottomPaneTab === 'overview' 
+                ? `Capacity breakdown by tail for ${formatDateForDetailsHeader(selectedDate)}`
+                : `Bay allocations for ${formatDateForDetailsHeader(selectedDate)}`
+              }
+            </p>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        {bottomPaneTab === 'overview' && (
+          <>
+            {/* OVERVIEW TAB: Assignment Overview Table */}
+            {(() => {
+              // Aggregate assignments by tail for the selected date
+              const assignmentOverview = aggregateAssignmentsByTail(gridData, selectedDate);
 
         // Calculate totals
         const totals = assignmentOverview.reduce(
@@ -2167,16 +2502,7 @@ export function WorkforcePlanning() {
         );
 
         return (
-          <div className="bg-white border-2 border-gray-800 rounded-lg shadow-lg overflow-hidden">
-            <div className="bg-gradient-to-r from-slate-100 to-slate-50 border-b-2 border-gray-800 p-4">
-              <h2 className="text-xl font-bold text-slate-800">
-                Assignment Overview
-              </h2>
-              <p className="text-sm text-slate-500 mt-1">
-                Capacity breakdown by tail for {formatDateForDetailsHeader(selectedDate)}
-              </p>
-            </div>
-
+          <>
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -2280,9 +2606,283 @@ export function WorkforcePlanning() {
                 Click on a tail number to filter the Assignments & Roster view above
               </p>
             </div>
-          </div>
+          </>
         );
       })()}
+        </>
+        )}
+
+        {/* BAY OCCUPANCY TAB */}
+        {bottomPaneTab === 'bayOccupancy' && (
+          <>
+            {isBayDataLoading ? (
+              <div className="flex flex-col items-center justify-center py-16 px-4">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                <p className="text-slate-600 font-medium">Loading bay occupancy data...</p>
+              </div>
+            ) : bayAllocations.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 px-4">
+                <div className="text-gray-400 mb-4">
+                  <Building2 className="w-16 h-16 mx-auto" />
+                </div>
+                <h4 className="text-lg font-semibold text-gray-600 mb-2">No Bay Data Available</h4>
+                <p className="text-gray-500 text-center max-w-md">
+                  No ongoing or upcoming aircraft visits found in the system.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Bay Occupancy Grid */}
+                <div className="overflow-hidden">
+                  <div className="flex">
+                    {/* ================================================================== */}
+                    {/* SPACER COLUMN - Aligns date columns with Assignments & Roster Plan */}
+                    {/* Width = Employee Details (384px) + Details columns (240px) - Bay column (80px) = 544px */}
+                    {/* Employee Details: ID(80) + Employee(128) + Team(80) + Role(96) = 384px */}
+                    {/* Details: Core(80) + Support(80) + TTL Login(80) = 240px */}
+                    {/* ================================================================== */}
+                    <div
+                      className="flex-shrink-0 border-r border-gray-400 bg-gray-50 flex items-center justify-center"
+                      style={{ width: '544px' }}
+                    >
+                      <div className="text-sm text-gray-400 italic text-center px-4">
+                        Select a tail number on a bay to view employee roster details
+                      </div>
+                    </div>
+
+                    {/* Bay Info Column (Fixed) - w-20 = 80px */}
+                    <div className="flex-shrink-0 border-r-2 border-gray-800">
+                      {/* Header */}
+                      <div className="bg-gray-200 border-b-2 border-gray-800">
+                        <div className="w-20 px-2 py-1 text-xs font-bold text-center text-gray-700 bg-gray-300">
+                          Bay Info
+                        </div>
+                        <div className="w-20 px-2 py-1 text-xs font-bold text-center border-t border-gray-400">
+                          Bay
+                        </div>
+                      </div>
+                      {/* Body - Fixed column */}
+                      <div className="max-h-[300px] overflow-y-auto" style={{ scrollbarWidth: 'none' }}>
+                        {(() => {
+                          // Get unique bay numbers that have allocations
+                          const uniqueBays = [...new Set(bayAllocations.map(a => a.bayNumber))].sort((a, b) => a - b);
+                          return uniqueBays.map((bayNum, idx) => {
+                            const isYellowHighlighted = yellowHighlightedBayRow === bayNum;
+                            return (
+                              <div
+                                key={bayNum}
+                                onClick={() => setYellowHighlightedBayRow(prev => prev === bayNum ? null : bayNum)}
+                                className={`w-20 h-8 px-2 text-xs font-bold border-b border-gray-300 flex items-center justify-center cursor-pointer transition-colors ${
+                                  isYellowHighlighted
+                                    ? 'bg-yellow-400 text-yellow-900 ring-2 ring-yellow-500 ring-inset'
+                                    : idx % 2 === 0 ? 'bg-gray-100 hover:bg-gray-200' : 'bg-gray-50 hover:bg-gray-100'
+                                }`}
+                              >
+                                Bay {bayNum}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Scrollable Date Columns */}
+                    <div className="flex-1 overflow-hidden">
+                      {/* Date Header */}
+                      <div
+                        ref={bayHeaderRef}
+                        className="border-b-2 border-gray-800 overflow-x-hidden"
+                      >
+                        {/* Row 1: Section header */}
+                        <div className="flex">
+                          <div
+                            className="bg-gray-300 px-2 py-1 text-xs font-bold text-center text-gray-700 border-b border-gray-400"
+                            style={{ minWidth: `${dateRange.length * 80}px` }}
+                          >
+                            Bay Occupancy ({dateRange.length > 0 ? `${formatDateForHeader(dateRange[0])} - ${formatDateForHeader(dateRange[dateRange.length - 1])}` : '--'})
+                          </div>
+                        </div>
+                        {/* Row 2: Date columns */}
+                        <div className="flex">
+                          {dateRange.map((date, idx) => {
+                            const isBaySelected = selectedBayDates.has(date);
+                            const isToday = date === CURRENT_DATE;
+                            return (
+                              <div
+                                key={date}
+                                onClick={() => {
+                                  setSelectedDate(date);
+                                  setSelectedBayDates(prev => {
+                                    const newSet = new Set(prev);
+                                    if (newSet.has(date)) {
+                                      newSet.delete(date);
+                                    } else {
+                                      newSet.add(date);
+                                    }
+                                    return newSet;
+                                  });
+                                }}
+                                className={`
+                                  flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
+                                  cursor-pointer transition-all relative select-none
+                                  ${isBaySelected
+                                    ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
+                                    : isToday
+                                      ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  }
+                                `}
+                              >
+                                {formatDateForHeader(date)}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Bay Body - Scrollable */}
+                      <div
+                        ref={bayBodyRef}
+                        onScroll={handleBayBodyScroll}
+                        className="max-h-[300px] overflow-x-auto overflow-y-auto"
+                      >
+                        {(() => {
+                          const uniqueBays = [...new Set(bayAllocations.map(a => a.bayNumber))].sort((a, b) => a - b);
+                          
+                          // Helper: Check if this is the first cell in a continuous span
+                          const isFirstInSpan = (bayNum: number, idx: number, tail: string | null) => {
+                            if (idx === 0) return true;
+                            const prevAllocation = bayAllocations.find(
+                              ba => ba.bayNumber === bayNum && ba.dates.includes(dateRange[idx - 1])
+                            );
+                            const prevTail = prevAllocation?.aircraft.aircraft_reg || null;
+                            return prevTail !== tail;
+                          };
+
+                          // Helper: Get span length for continuous allocation
+                          const getContinuousSpan = (bayNum: number, startIdx: number, tail: string | null) => {
+                            if (!tail) return 0;
+                            let span = 1;
+                            for (let i = startIdx + 1; i < dateRange.length; i++) {
+                              const nextAllocation = bayAllocations.find(
+                                ba => ba.bayNumber === bayNum && ba.dates.includes(dateRange[i])
+                              );
+                              const nextTail = nextAllocation?.aircraft.aircraft_reg || null;
+                              if (nextTail === tail) {
+                                span++;
+                              } else {
+                                break;
+                              }
+                            }
+                            return span;
+                          };
+
+                          return uniqueBays.map((bayNum, rowIdx) => {
+                            const isRowYellowHighlighted = yellowHighlightedBayRow === bayNum;
+
+                            return (
+                              <div
+                                key={bayNum}
+                                className={`flex border-b border-gray-300 h-8 ${
+                                  isRowYellowHighlighted
+                                    ? 'bg-yellow-200 ring-2 ring-yellow-400 ring-inset'
+                                    : rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                                }`}
+                              >
+                                {dateRange.map((date, idx) => {
+                                  const allocation = bayAllocations.find(
+                                    ba => ba.bayNumber === bayNum && ba.dates.includes(date)
+                                  );
+                                  const tail = allocation?.aircraft.aircraft_reg || null;
+                                  const showLabel = isFirstInSpan(bayNum, idx, tail);
+                                  const span = showLabel && tail ? getContinuousSpan(bayNum, idx, tail) : 0;
+                                  
+                                  const isBayDateSelected = selectedBayDates.has(date);
+                                  const isToday = date === CURRENT_DATE;
+                                  
+                                  // Check if simulated aircraft (2+ hyphens)
+                                  const isSimulatedAircraft = tail ? (tail.match(/-/g) || []).length >= 2 : false;
+
+                                  return (
+                                    <div
+                                      key={date}
+                                      onClick={() => {
+                                        setSelectedDate(date);
+                                        if (allocation) {
+                                          setSearchQuery(allocation.aircraft.aircraft_reg);
+                                        }
+                                      }}
+                                      className={`
+                                        flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center cursor-pointer select-none
+                                        ${allocation
+                                          ? isSimulatedAircraft
+                                            ? 'bg-orange-400 hover:bg-orange-500'
+                                            : 'bg-blue-500 hover:bg-blue-600'
+                                          : isBayDateSelected 
+                                            ? 'bg-blue-100/70' 
+                                            : ''
+                                        }
+                                      `}
+                                    >
+                                      {/* Column highlight for selected dates */}
+                                      {isBayDateSelected && !allocation && (
+                                        <div className="absolute inset-0 bg-blue-500/20 pointer-events-none"></div>
+                                      )}
+                                      {/* Today indicator */}
+                                      {isToday && (
+                                        <div className="absolute inset-0 border-l-4 border-amber-500 pointer-events-none"></div>
+                                      )}
+                                      {/* Tail number label spanning multiple cells */}
+                                      {showLabel && allocation && (
+                                        <div
+                                          className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${
+                                            isSimulatedAircraft ? 'text-orange-900' : 'text-white'
+                                          }`}
+                                          style={{ width: `${span * 80}px` }}
+                                        >
+                                          {allocation.aircraft.aircraft_reg}
+                                        </div>
+                                      )}
+                                      {/* Empty cell indicator */}
+                                      {!allocation && (
+                                        <span className="text-gray-300 text-xs">-</span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend Footer */}
+                <div className="p-3 flex gap-6 text-sm border-t-2 border-gray-800">
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-blue-500 rounded"></div>
+                    <span className="font-medium">Scheduled Aircraft</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-orange-400 rounded"></div>
+                    <span className="font-medium">Simulated Aircraft</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-yellow-400 ring-2 ring-yellow-600 rounded"></div>
+                    <span className="font-medium">Highlighted Bay Row</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-amber-100 border-l-4 border-amber-500 rounded"></div>
+                    <span className="font-medium">Today ({formatDateForHeader(CURRENT_DATE)})</span>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </div>
 
       {/* ================================================================== */}
       {/* ALERT DETAILS MODAL */}
