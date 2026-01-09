@@ -91,6 +91,7 @@ export function PlanningScenarioBuilder() {
   // Settings popup state
   const [showSettingsPopup, setShowSettingsPopup] = useState(false);
   const [activeScenario, setActiveScenario] = useState<string>('');
+  const [activeScenarioName, setActiveScenarioName] = useState<string>(''); // Store the actual name from DB
 
   useEffect(() => {
     loadSavedScenarios();
@@ -113,6 +114,9 @@ export function PlanningScenarioBuilder() {
       }
 
       if (data?.scenario_name) {
+        // Store the active scenario name from DB
+        setActiveScenarioName(data.scenario_name);
+        
         // Find the scenario ID from saved scenarios
         const { data: scenarioData } = await supabase
           .from('ai_allocation_scenarios_v2')
@@ -1712,15 +1716,19 @@ export function PlanningScenarioBuilder() {
             </div>
             {/* Settings Icon with Default Scenario Display */}
             <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 bg-green-100 px-3 py-1.5 rounded-full border border-green-300">
-                {activeScenario ? (
-                  <span className="text-sm font-bold text-green-800">
-                    {savedScenarios.find(s => s.id === activeScenario)?.scenario_name || 'Loading...'}
-                  </span>
-                ) : (
-                  <span className="text-sm font-medium text-gray-500 italic">Not Set</span>
-                )}
-              </div>
+              {/* Default Scenario Badge - Shows scenario name from DB */}
+              <span className={`text-sm font-semibold px-3 py-1.5 rounded-full ${
+                activeScenarioName || activeScenario
+                  ? 'text-emerald-700 bg-emerald-100 border border-emerald-300' 
+                  : 'text-slate-600 bg-slate-100 border border-slate-300'
+              }`}>
+                {activeScenarioName 
+                  ? `${activeScenarioName}`
+                  : activeScenario 
+                    ? `${savedScenarios.find(s => s.id === activeScenario)?.scenario_name || 'Loading...'}`
+                    : 'No Default Scenario'
+                }
+              </span>
               <button
                 className="p-2 hover:bg-green-100 rounded-full transition-colors"
                 onClick={() => setShowSettingsPopup(true)}
@@ -2260,7 +2268,7 @@ export function PlanningScenarioBuilder() {
             <div className="px-6 pt-6 pb-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-teal-700">
-                  Default Scenario
+                  Active Scenario
                 </h2>
                 <button
                   onClick={() => setShowSettingsPopup(false)}
@@ -2329,6 +2337,8 @@ export function PlanningScenarioBuilder() {
                         return;
                       }
 
+                      // Update the active scenario name in state
+                      setActiveScenarioName(selectedScenario.scenario_name);
                       setShowSettingsPopup(false);
                     } catch (err) {
                       console.error('Error setting active scenario:', err);
