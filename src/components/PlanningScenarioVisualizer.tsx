@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { X, Search, User, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
+import { X, Search, User, ArrowUpDown, ArrowUp, ArrowDown, Settings, Play } from 'lucide-react';
 import { getCellColors, CELL_COLORS, formatRoleForDisplay } from '../lib/workforcePlanningData';
 import { EmployeeDetailDrawer, BasicEmployeeInfo } from './EmployeeDetailDrawer';
 
@@ -136,7 +136,8 @@ const TODAY = '2022-04-30';
 
 export function PlanningScenarioVisualizer() {
   const [scenarios, setScenarios] = useState<PlanningScenario[]>([]);
-  const [selectedScenario, setSelectedScenario] = useState<string>(''); // Default to no selection
+  const [selectedScenario, setSelectedScenario] = useState<string>(''); // Default to no selection - used for viewing
+  const [activeScenario, setActiveScenario] = useState<string>(''); // Separate state for "Current Active Scenario" in settings popup
   const [aircraftSchedules, setAircraftSchedules] = useState<AircraftSchedule[]>([]);
   const [dates, setDates] = useState<string[]>([]);
   const [bayAllocations, setBayAllocations] = useState<BayAllocation[]>([]);
@@ -215,8 +216,14 @@ export function PlanningScenarioVisualizer() {
   // Track removed support team member details for logging
   const [removedSupportDetails, setRemovedSupportDetails] = useState<Map<string, { empName: string; tailNum: string; dates: string[] }>>(new Map());
   
+  // Track DB core engineers moved to support
+  const [movedCoreDbEngineersToSupport, setMovedCoreDbEngineersToSupport] = useState<Map<string, SuggestedEngineer>>(new Map());
+  
   // Committing changes state
   const [isCommitting, setIsCommitting] = useState(false);
+  
+  // Settings popup state
+  const [showSettingsPopup, setShowSettingsPopup] = useState(false);
 
   // Refs for synchronized scrolling - Assignment & Roster Chart
   const dateHeaderRef = useRef<HTMLDivElement>(null);
@@ -589,6 +596,7 @@ export function PlanningScenarioVisualizer() {
       if (activeExists) {
         console.log('Auto-selecting active scenario from DB:', activeScenarioData.scenario_name);
         setSelectedScenario(activeScenarioData.scenario_name);
+        setActiveScenario(activeScenarioData.scenario_name); // Also set activeScenario state
       } else {
         console.log('Active scenario from DB not found in available scenarios:', activeScenarioData.scenario_name);
       }
@@ -790,6 +798,7 @@ export function PlanningScenarioVisualizer() {
       if (latestScenario) {
         skipTaskResetOnScenarioChangeRef.current = true;
         setSelectedScenario(latestScenarioName);
+        setActiveScenario(latestScenarioName); // Also update activeScenario state
         // Update active scenario in DB
         await updateActiveScenarioInDB(latestScenarioName);
       } else {
@@ -799,6 +808,7 @@ export function PlanningScenarioVisualizer() {
           console.log('Switching to base scenario:', base);
           skipTaskResetOnScenarioChangeRef.current = true;
           setSelectedScenario(base);
+          setActiveScenario(base); // Also update activeScenario state
           await updateActiveScenarioInDB(base);
         } else {
           // Force reload current scenario by calling handleScenarioSelection directly
@@ -1610,7 +1620,9 @@ export function PlanningScenarioVisualizer() {
 
     // Search in employees
     allEngineers.forEach(engineer => {
-      if (engineer.name.toLowerCase().includes(query) || engineer.id.toLowerCase().includes(query)) {
+      const name = engineer.name || '';
+      const id = engineer.id || '';
+      if (name.toLowerCase().includes(query) || id.toLowerCase().includes(query)) {
         matchingEngineers.add(engineer.id);
         isEngineerSearch = true;
       }
@@ -1620,8 +1632,9 @@ export function PlanningScenarioVisualizer() {
     if (scenarioRosterData.scenarioName && scenarioRosterData.byEmployee.size > 0) {
       scenarioRosterData.byEmployee.forEach((rows, empId) => {
         if (rows.length > 0) {
-          const empName = rows[0].name || empId;
-          if (empName.toLowerCase().includes(query) || empId.toLowerCase().includes(query)) {
+          const empName = rows[0].name || empId || '';
+          const id = empId || '';
+          if (empName.toLowerCase().includes(query) || id.toLowerCase().includes(query)) {
             matchingEngineers.add(empId);
             isEngineerSearch = true;
           }
@@ -1631,14 +1644,14 @@ export function PlanningScenarioVisualizer() {
 
     // Search in aircraft schedules
     aircraftSchedules.forEach(schedule => {
-      if (schedule.aircraft_reg.toLowerCase().includes(query)) {
+      if (schedule.aircraft_reg && schedule.aircraft_reg.toLowerCase().includes(query)) {
         matchingTails.add(schedule.aircraft_reg);
       }
     });
 
     // Search in engineer assignments
     engineerAssignments.forEach(assignment => {
-      if (assignment.tailNumber.toLowerCase().includes(query)) {
+      if (assignment.tailNumber && assignment.tailNumber.toLowerCase().includes(query)) {
         matchingTails.add(assignment.tailNumber);
       }
     });
@@ -2960,6 +2973,196 @@ export function PlanningScenarioVisualizer() {
       console.log('Technician assigned to Support for dates:', datesToAssign, technician.empName);
     }
 
+    // Engineer dropped on Core Engineers (from Support) - move from support to core
+    if (zone === 'coreEngineers' && item.type === 'engineer' && item.source === 'support') {
+      const engineer = item.data as SuggestedEngineer;
+      
+      // Check if this is a moved DB core engineer (originally from coreTeamDetails)
+      const isMovedDbCoreEngineer = movedCoreDbEngineersToSupport.has(engineer.empId);
+      
+      if (isMovedDbCoreEngineer) {
+        // This is a DB core engineer being moved back to core
+        setMovedCoreDbEngineersToSupport(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(engineer.empId);
+          return newMap;
+        });
+        setRemovedCoreTeamMembers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(engineer.empId);
+          return newSet;
+        });
+        // Remove from removedCoreTeamDetails since they're back in core
+        setRemovedCoreTeamDetails(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(engineer.empId);
+          return newMap;
+        });
+      } else {
+        // UI-added support engineer - update uiDateAssignments
+        setUiDateAssignments(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${engineer.empId}-${date}`, { zone: 'core', tail: tailNum });
+          });
+          return newMap;
+        });
+      }
+      
+      if (tailNum) {
+        setUiRosterOverrides(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${engineer.empId}-${date}`, { core: tailNum });
+          });
+          return newMap;
+        });
+      }
+      // Track for commit - move from ADDED_TO_SUPPORT to ADDED_TO_CORE
+      setAddedToCoreDetails(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(engineer.empId);
+        const allDates = existing ? [...new Set([...existing.dates, ...datesToAssign])] : datesToAssign;
+        newMap.set(engineer.empId, { empName: engineer.empName, tailNum, dates: allDates });
+        return newMap;
+      });
+      setAddedToSupportDetails(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(engineer.empId);
+        return newMap;
+      });
+      console.log('Engineer moved from Support to Core for dates:', datesToAssign, engineer.empName);
+    }
+
+    // Engineer dropped on Support Engineers (from Core) - move from core to support
+    if (zone === 'supportEngineers' && item.type === 'engineer' && item.source === 'core') {
+      const engineer = item.data as SuggestedEngineer;
+      
+      // Check if this is a DB core engineer (from coreTeamDetails) or UI-added (from suggestedEngineers)
+      const isDbCoreEngineer = coreTeamDetails.some(m => m.empId === engineer.empId);
+      
+      if (isDbCoreEngineer) {
+        // DB core engineer - add to removedCoreTeamMembers and track in movedCoreDbEngineersToSupport
+        setRemovedCoreTeamMembers(prev => new Set([...prev, engineer.empId]));
+        setMovedCoreDbEngineersToSupport(prev => {
+          const newMap = new Map(prev);
+          newMap.set(engineer.empId, engineer);
+          return newMap;
+        });
+        // Track removed core team details for logging
+        setRemovedCoreTeamDetails(prev => {
+          const newMap = new Map(prev);
+          const existing = newMap.get(engineer.empId);
+          const allDates = existing ? [...new Set([...existing.dates, ...datesToAssign])] : datesToAssign;
+          newMap.set(engineer.empId, { empName: engineer.empName, tailNum: selectedTask || '', dates: allDates });
+          return newMap;
+        });
+      } else {
+        // UI-added core engineer - update uiDateAssignments
+        setUiDateAssignments(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${engineer.empId}-${date}`, { zone: 'support', tail: tailNum });
+          });
+          return newMap;
+        });
+      }
+      
+      if (tailNum) {
+        setUiRosterOverrides(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${engineer.empId}-${date}`, { support: tailNum });
+          });
+          return newMap;
+        });
+      }
+      // Track for commit - move from ADDED_TO_CORE to ADDED_TO_SUPPORT
+      setAddedToSupportDetails(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(engineer.empId);
+        const allDates = existing ? [...new Set([...existing.dates, ...datesToAssign])] : datesToAssign;
+        newMap.set(engineer.empId, { empName: engineer.empName, tailNum, dates: allDates });
+        return newMap;
+      });
+      setAddedToCoreDetails(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(engineer.empId);
+        return newMap;
+      });
+      console.log('Engineer moved from Core to Support for dates:', datesToAssign, engineer.empName);
+    }
+
+    // Technician dropped on Core Technicians (from Support) - move from support to core
+    if (zone === 'coreTechnicians' && item.type === 'technician' && item.source === 'support') {
+      const technician = item.data as TechnicianDetails;
+      setUiDateAssignments(prev => {
+        const newMap = new Map(prev);
+        datesToAssign.forEach(date => {
+          newMap.set(`${technician.empId}-${date}`, { zone: 'core', tail: tailNum });
+        });
+        return newMap;
+      });
+      if (tailNum) {
+        setUiRosterOverrides(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${technician.empId}-${date}`, { core: tailNum });
+          });
+          return newMap;
+        });
+      }
+      // Track for commit - move from ADDED_TO_SUPPORT to ADDED_TO_CORE
+      setAddedToCoreDetails(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(technician.empId);
+        const allDates = existing ? [...new Set([...existing.dates, ...datesToAssign])] : datesToAssign;
+        newMap.set(technician.empId, { empName: technician.empName, tailNum, dates: allDates });
+        return newMap;
+      });
+      setAddedToSupportDetails(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(technician.empId);
+        return newMap;
+      });
+      console.log('Technician moved from Support to Core for dates:', datesToAssign, technician.empName);
+    }
+
+    // Technician dropped on Support Technicians (from Core) - move from core to support
+    if (zone === 'supportTechnicians' && item.type === 'technician' && item.source === 'core') {
+      const technician = item.data as TechnicianDetails;
+      setUiDateAssignments(prev => {
+        const newMap = new Map(prev);
+        datesToAssign.forEach(date => {
+          newMap.set(`${technician.empId}-${date}`, { zone: 'support', tail: tailNum });
+        });
+        return newMap;
+      });
+      if (tailNum) {
+        setUiRosterOverrides(prev => {
+          const newMap = new Map(prev);
+          datesToAssign.forEach(date => {
+            newMap.set(`${technician.empId}-${date}`, { support: tailNum });
+          });
+          return newMap;
+        });
+      }
+      // Track for commit - move from ADDED_TO_CORE to ADDED_TO_SUPPORT
+      setAddedToSupportDetails(prev => {
+        const newMap = new Map(prev);
+        const existing = newMap.get(technician.empId);
+        const allDates = existing ? [...new Set([...existing.dates, ...datesToAssign])] : datesToAssign;
+        newMap.set(technician.empId, { empName: technician.empName, tailNum, dates: allDates });
+        return newMap;
+      });
+      setAddedToCoreDetails(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(technician.empId);
+        return newMap;
+      });
+      console.log('Technician moved from Core to Support for dates:', datesToAssign, technician.empName);
+    }
+
     // Engineer dropped on Suggested Engineers (from Core or Support) - remove date-specific assignment
     if (zone === 'suggestedEngineers' && item.type === 'engineer' && (item.source === 'core' || item.source === 'support')) {
       const engineer = item.data as SuggestedEngineer;
@@ -3372,9 +3575,14 @@ export function PlanningScenarioVisualizer() {
       const newSelected = new Set(selectedBayDates);
       if (newSelected.has(date)) {
         newSelected.delete(date);
-        // If all columns are now deselected, clear selectedDate too
-        if (newSelected.size === 0) {
-          setSelectedDate('');
+        // If this date was selectedDate, update it to another selected date or clear it
+        if (selectedDate === date) {
+          if (newSelected.size > 0) {
+            // Set to the first remaining selected date
+            setSelectedDate(Array.from(newSelected)[0]);
+          } else {
+            setSelectedDate('');
+          }
         }
       } else {
         newSelected.add(date);
@@ -3388,9 +3596,14 @@ export function PlanningScenarioVisualizer() {
       const newSelected = new Set(selectedBayDates);
       if (newSelected.has(date)) {
         newSelected.delete(date);
-        // If all columns are now deselected, clear selectedDate too
-        if (newSelected.size === 0) {
-          setSelectedDate('');
+        // If this date was selectedDate, update it to another selected date or clear it
+        if (selectedDate === date) {
+          if (newSelected.size > 0) {
+            // Set to the first remaining selected date
+            setSelectedDate(Array.from(newSelected)[0]);
+          } else {
+            setSelectedDate('');
+          }
         }
       } else {
         newSelected.add(date);
@@ -3487,7 +3700,131 @@ export function PlanningScenarioVisualizer() {
   return (
     <div className="h-full flex flex-col overflow-y-auto">
       <div className="bg-white border-2 border-gray-800 rounded mb-4 p-4">
-        <h2 className="text-xl font-bold mb-3">Planning Scenario Visualizer</h2>
+      <div className="flex items-center justify-between bg-white">
+  
+  {/* Left section */}
+  <div className="flex items-center gap-2 py-2">
+    <h2 className="text-xl font-bold mb-3">
+      Planning Scenario Visualizer
+    </h2>
+
+    <button
+      className="p-1 hover:bg-gray-100 rounded"
+      onClick={() => setShowSettingsPopup(true)}
+    >
+      <Settings className="w-4 h-4 text-black mb-2" />
+    </button>
+  </div>
+
+  {/* Right section */}
+  <div className="bg-[#dff2d0] px-6 py-2 border-l border-gray-300 flex items-center">
+    <span className="text-sm font-semibold text-[#1a5fce]">
+      Active Scenario set – {activeScenario || 'None'}
+    </span>
+  </div>
+
+</div>
+
+        
+        {/* Settings Popup - Active Scenario */}
+        {showSettingsPopup && (
+  <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+    <div className="w-[420px] rounded-2xl bg-white shadow-xl border border-gray-200 overflow-hidden">
+
+      {/* Top Accent */}
+      <div className="h-1 bg-gradient-to-r from-emerald-400 to-blue-500" />
+
+      {/* Header */}
+      <div className="px-6 pt-6 pb-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold text-teal-700">
+            Active Scenario
+          </h2>
+          <button
+            onClick={() => setShowSettingsPopup(false)}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            ✕
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mt-1">
+          Configure and manage your planning scenario
+        </p>
+      </div>
+
+      {/* Content */}
+      <div className="px-6 pb-6">
+        <label className="block text-sm font-semibold text-gray-700 mb-2">
+          Current Active Scenario
+        </label>
+
+        <div className="relative mb-6">
+          <select
+            value={activeScenario}
+            onChange={(e) => {
+              const newScenario = e.target.value;
+              setActiveScenario(newScenario);
+              if (newScenario) {
+                updateActiveScenarioInDB(newScenario);
+              }
+            }}
+            className="w-full h-11 px-4 pr-10 rounded-xl border border-gray-300 bg-white text-sm font-medium focus:outline-none focus:ring-2 focus:ring-teal-500"
+          >
+            <option value="" disabled>
+              -- Select a scenario --
+            </option>
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id}>
+                {scenario.name}
+              </option>
+            ))}
+          </select>
+
+          {/* Dropdown icon */}
+          {/* <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none">
+            <svg
+              className="w-4 h-4 text-gray-500"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </div> */}
+        </div>
+
+        {/* Load Button */}
+        <div className="flex justify-center">
+          <button
+            onClick={() => {
+              // Just close the popup - activeScenario is already saved to DB on dropdown change
+              // This does NOT affect selectedScenario (the viewing scenario)
+              setShowSettingsPopup(false);
+            }}
+            disabled={!activeScenario}
+            className={`flex items-center gap-2 px-6 py-3 rounded-full font-semibold shadow-md transition ${
+              activeScenario 
+                ? 'bg-teal-500 hover:bg-teal-600 text-white cursor-pointer' 
+                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            }`}
+          >
+            <Play className="w-4 h-4" />
+            Set Active
+          </button>
+        </div>
+
+        {/* Status */}
+        {/* <div className="flex items-center justify-center gap-2 mt-4 text-sm text-gray-600">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          Scenario Ready
+        </div> */}
+      </div>
+    </div>
+  </div>
+)}
+
+
 
         <div className="mb-4">
           <label className="block text-sm font-medium mb-2">Select Scenario:</label>
@@ -3496,10 +3833,8 @@ export function PlanningScenarioVisualizer() {
             onChange={(e) => {
               const newScenario = e.target.value;
               setSelectedScenario(newScenario);
-              // Update active scenario in DB when user changes selection
-              if (newScenario) {
-                updateActiveScenarioInDB(newScenario);
-              }
+              // Note: This only loads/views the scenario locally
+              // To set Active Scenario, use the Settings popup
             }}
             className="w-full px-3 py-2 border-2 border-gray-300 rounded"
           >
@@ -3531,12 +3866,20 @@ export function PlanningScenarioVisualizer() {
                 className="w-full pl-10 pr-3 py-2 border-2 border-gray-300 rounded focus:border-blue-500 focus:outline-none"
               />
             </div>
-            {(searchQuery || selectedTask) && (
+            {(searchQuery || selectedTask || selectedBayDates.size > 0 || selectedBayCells) && (
               <button
                 onClick={() => {
                   setSearchQuery('');
                   setSelectedBay(null);
                   setSelectedTask(null);
+                  // Clear all column/cell selections
+                  setSelectedBayDates(new Set());
+                  setLastClickedBayDate(null);
+                  setSelectedBayCells(null);
+                  setIsDraggingBaySelection(false);
+                  setDragStartCell(null);
+                  setSelectedBayRowForHighlight(null);
+                  setSelectedTailDetails(null);
                 }}
                 className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors font-medium"
               >
@@ -3548,7 +3891,7 @@ export function PlanningScenarioVisualizer() {
         )}
       </div>
 
-      {selectedBay && (
+      {selectedBay && selectedBayRowForHighlight !== null && selectedBayDates.size > 0 && (
         <div className="bg-white border-2 border-gray-800 rounded mb-4 p-4 sticky top-0 z-30">
           {/* Header with tail details and close button */}
           <div className="flex items-start justify-between mb-4">
@@ -3617,14 +3960,14 @@ export function PlanningScenarioVisualizer() {
                 {selectedTailDetails?.minTechnicians ?? additionalEngReq.TECH}
               </span>
             </div>
-            <div className="flex items-center gap-2 border-l pl-6 border-gray-300">
+            {/* <div className="flex items-center gap-2 border-l pl-6 border-gray-300">
               <span className="text-sm text-gray-600">Core Engineers:</span>
               <span className="font-bold text-lg text-blue-600">{coreTeamDetails.filter(m => !removedCoreTeamMembers.has(m.empId)).length}</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-600">Core Technicians:</span>
               <span className="font-bold text-lg text-green-600">{coreTechnicianDetails.filter(t => !removedCoreTeamMembers.has(t.empId)).length}</span>
-            </div>
+            </div> */}
           </div>
 
           {/* ===== ENGINEERS SECTION (BLUE) ===== */}
@@ -3663,37 +4006,25 @@ export function PlanningScenarioVisualizer() {
                 e.stopPropagation();
               }}
             >
-              {/* Drop overlay - shown when dragging an engineer from suggested */}
-              {draggedItem?.type === 'engineer' && draggedItem?.source === 'suggested' && (
-                <div
-                  className="absolute inset-0 z-50 bg-blue-200/80 rounded-lg flex items-center justify-center cursor-pointer border-4 border-blue-500"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = 'copy';
-                  }}
-                >
-                  <span className="text-blue-800 font-bold text-lg pointer-events-none">Drop here to add to Core</span>
-                </div>
-              )}
               <div className="font-semibold text-blue-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
                 Core Engineers ({coreTeamDetails.filter(m => !removedCoreTeamMembers.has(m.empId)).length + displayCoreEngineers.length})
               </div>
               {(coreTeamDetails.filter(m => !removedCoreTeamMembers.has(m.empId)).length > 0 || displayCoreEngineers.length > 0) ? (
                 <div className="flex flex-wrap gap-2">
-                  {/* Existing core team members */}
+                  {/* Existing core team members (non-draggable - from plan) */}
                   {coreTeamDetails.filter(m => !removedCoreTeamMembers.has(m.empId)).map(member => (
                     <div
                       key={member.empId}
-                      className="relative group"
+                      className="relative group select-none"
                       onMouseEnter={() => setHoveredCard(`core-eng-${member.empId}`)}
                       onMouseLeave={() => setHoveredCard(null)}
                     >
-                      <div className="border-2 border-blue-400 bg-blue-50 rounded px-3 py-2 pr-6 cursor-default relative">
+                      <div className="border-2 border-blue-400 bg-blue-50 rounded px-3 py-2 pr-6 relative">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            e.preventDefault();
                             // Get dates for removal - use selectedBayDates if available, else selectedDate or all visible dates
                             const datesToRemove: string[] = selectedBayDates.size > 0 
                               ? Array.from(selectedBayDates) 
@@ -3708,7 +4039,8 @@ export function PlanningScenarioVisualizer() {
                             });
                             setRemovedCoreTeamMembers(prev => new Set([...prev, member.empId]));
                           }}
-                          className="absolute top-1 right-1 w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center z-10"
+                          onMouseDown={(e) => e.stopPropagation()}
+                          className="absolute top-1 right-1 w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center z-10 cursor-pointer"
                           title="Remove from Core Team"
                         >
                           <X className="w-3 h-3" />
@@ -3821,92 +4153,11 @@ export function PlanningScenarioVisualizer() {
                 handleDropOnCoreSupport(e, 'engineer');
               }}
             >
-              {/* Drop overlay - shown when dragging an engineer from suggested */}
-              {draggedItem?.type === 'engineer' && draggedItem?.source === 'suggested' && (
-                <div
-                  className="absolute inset-0 z-50 bg-blue-200/80 rounded-lg flex items-center justify-center cursor-pointer border-4 border-blue-500"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = 'copy';
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('DROP on overlay - Core Support Engineers!');
-                    handleDropOnCoreSupport(e, 'engineer');
-                  }}
-                  onMouseUp={() => {
-                    // Fallback: handle drop via mouseUp when HTML5 drop fails
-                    // NOTE: Applies to ALL selected bay dates
-                    console.log('MouseUp on overlay - Support Engineers!');
-                    if (draggedItem?.type === 'engineer' && draggedItem?.source === 'suggested') {
-                      const engineer = draggedItem.data as SuggestedEngineer;
-                      const tailNum = selectedTask || '';
-                      const datesToAssign: string[] = selectedBayDates.size > 0 
-                        ? Array.from(selectedBayDates) 
-                        : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                      if (datesToAssign.length > 0) {
-                        setUiDateAssignments(prev => {
-                          const newMap = new Map(prev);
-                          datesToAssign.forEach(date => {
-                            newMap.set(`${engineer.empId}-${date}`, { zone: 'support', tail: tailNum });
-                          });
-                          return newMap;
-                        });
-                        if (tailNum) {
-                          setUiRosterOverrides(prev => {
-                            const newMap = new Map(prev);
-                            datesToAssign.forEach(date => {
-                              newMap.set(`${engineer.empId}-${date}`, { support: tailNum });
-                            });
-                            return newMap;
-                          });
-                        }
-                      }
-                      setDraggedItem(null);
-                    }
-                  }}
-                  onClick={() => {
-                    // Also handle click as additional fallback
-                    // NOTE: Applies to ALL selected bay dates
-                    console.log('Click on overlay - Support Engineers!');
-                    if (draggedItem?.type === 'engineer' && draggedItem?.source === 'suggested') {
-                      const engineer = draggedItem.data as SuggestedEngineer;
-                      const tailNum = selectedTask || '';
-                      const datesToAssign: string[] = selectedBayDates.size > 0 
-                        ? Array.from(selectedBayDates) 
-                        : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                      if (datesToAssign.length > 0) {
-                        setUiDateAssignments(prev => {
-                          const newMap = new Map(prev);
-                          datesToAssign.forEach(date => {
-                            newMap.set(`${engineer.empId}-${date}`, { zone: 'support', tail: tailNum });
-                          });
-                          return newMap;
-                        });
-                        if (tailNum) {
-                          setUiRosterOverrides(prev => {
-                            const newMap = new Map(prev);
-                            datesToAssign.forEach(date => {
-                              newMap.set(`${engineer.empId}-${date}`, { support: tailNum });
-                            });
-                            return newMap;
-                          });
-                        }
-                      }
-                      setDraggedItem(null);
-                    }
-                  }}
-                >
-                  <span className="text-blue-800 font-bold text-lg pointer-events-none">Drop here to add (or click)</span>
-                </div>
-              )}
               <div className="font-semibold text-blue-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
-                Support Engineers ({supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length + displaySupportEngineers.length})
+                Support Engineers ({supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length + displaySupportEngineers.length + movedCoreDbEngineersToSupport.size})
               </div>
-              {(supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length > 0 || displaySupportEngineers.length > 0) ? (
+              {(supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).length > 0 || displaySupportEngineers.length > 0 || movedCoreDbEngineersToSupport.size > 0) ? (
                 <div className="flex flex-wrap gap-2">
                   {/* Existing support team members from database */}
                   {supportTeamDetails.filter(m => !removedSupportMembers.has(m.empId)).map(member => (
@@ -3952,6 +4203,69 @@ export function PlanningScenarioVisualizer() {
                             <div><span className="font-medium">Aircraft:</span> {member.mostWorkedAircraft || 'N/A'}</div>
                             <div><span className="font-medium">Licenses:</span> {member.licenseCount}</div>
                             <div><span className="font-medium">Leave Balance:</span> {member.totalLeaveBalance} days</div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  {/* DB Core engineers moved to support (draggable back to core) */}
+                  {Array.from(movedCoreDbEngineersToSupport.values()).map(engineer => (
+                    <div
+                      key={`moved-core-${engineer.empId}`}
+                      draggable={true}
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        console.log('Moved Core DB Engineer DragStart (in Support):', engineer.empName);
+                        setHoveredCard(null);
+                        const item = { type: 'engineer' as const, data: engineer, source: 'support' };
+                        setDraggedItem(item);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'engineer', source: 'support', id: engineer.empId }));
+                      }}
+                      onDragEnd={(e) => {
+                        e.stopPropagation();
+                        console.log('Moved Core DB Engineer DragEnd, activeDropZone:', activeDropZone);
+                        handleDragEnd(draggedItem);
+                      }}
+                      className="relative group cursor-grab active:cursor-grabbing select-none"
+                      onMouseEnter={() => setHoveredCard(`moved-core-support-${engineer.empId}`)}
+                      onMouseLeave={() => setHoveredCard(null)}
+                    >
+                      <div className="border-2 border-blue-600 bg-blue-100 rounded px-3 py-2 pr-6 pointer-events-none relative">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Remove from movedCoreDbEngineersToSupport and add back to core
+                            setMovedCoreDbEngineersToSupport(prev => {
+                              const newMap = new Map(prev);
+                              newMap.delete(engineer.empId);
+                              return newMap;
+                            });
+                            setRemovedCoreTeamMembers(prev => {
+                              const newSet = new Set(prev);
+                              newSet.delete(engineer.empId);
+                              return newSet;
+                            });
+                          }}
+                          className="absolute top-1 right-1 w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center z-10 pointer-events-auto"
+                          title="Remove from Support (return to Core)"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                        <div className="font-semibold text-sm text-gray-900">{engineer.empName}</div>
+                        <div className="text-xs text-gray-500">{engineer.title} | {engineer.team || 'N/A'}</div>
+                        <div className="text-xs text-blue-600 font-medium">← Moved from Core</div>
+                      </div>
+                      {hoveredCard === `moved-core-support-${engineer.empId}` && (
+                        <div className="absolute z-50 left-0 top-full mt-1 w-56 border-2 border-blue-500 bg-white rounded-lg shadow-xl p-3">
+                          <div className="font-bold text-sm text-gray-900 mb-2">{engineer.empName}</div>
+                          <div className="space-y-1 text-xs text-gray-600">
+                            <div><span className="font-medium">Title:</span> {engineer.title}</div>
+                            <div><span className="font-medium">Team:</span> {engineer.team || 'N/A'}</div>
+                            <div><span className="font-medium">Exp:</span> {engineer.yearsOfExperience} yrs</div>
+                            <div><span className="font-medium">Aircraft:</span> {engineer.mostWorkedAircraft || 'N/A'}</div>
+                            <div><span className="font-medium">Licenses:</span> {engineer.licenseCount}</div>
+                            <div><span className="font-medium">Leave Balance:</span> {engineer.totalLeaveBalance} days</div>
                           </div>
                         </div>
                       )}
@@ -4048,79 +4362,6 @@ export function PlanningScenarioVisualizer() {
               handleDropOnSuggested(e, 'engineer');
             }}
           >
-            {/* Drop overlay - shown when dragging an engineer from core or support */}
-            {draggedItem?.type === 'engineer' && (draggedItem?.source === 'core' || draggedItem?.source === 'support') && (
-              <div
-                className="absolute inset-0 z-50 bg-blue-200/80 rounded-lg flex items-center justify-center cursor-pointer border-4 border-blue-500"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  e.dataTransfer.dropEffect = 'copy';
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  console.log('DROP on overlay - Suggested Engineers!');
-                  handleDropOnSuggested(e, 'engineer');
-                }}
-                onMouseUp={() => {
-                  // NOTE: Removes assignment for ALL selected bay dates
-                  console.log('MouseUp on overlay - Suggested Engineers!');
-                  if (draggedItem?.type === 'engineer' && (draggedItem?.source === 'core' || draggedItem?.source === 'support')) {
-                    const engineer = draggedItem.data as SuggestedEngineer;
-                    const datesToRemove: string[] = selectedBayDates.size > 0 
-                      ? Array.from(selectedBayDates) 
-                      : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                    if (datesToRemove.length > 0) {
-                      setUiDateAssignments(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${engineer.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                      setUiRosterOverrides(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${engineer.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                    }
-                    setDraggedItem(null);
-                  }
-                }}
-                onClick={() => {
-                  // NOTE: Removes assignment for ALL selected bay dates
-                  console.log('Click on overlay - Suggested Engineers!');
-                  if (draggedItem?.type === 'engineer' && (draggedItem?.source === 'core' || draggedItem?.source === 'support')) {
-                    const engineer = draggedItem.data as SuggestedEngineer;
-                    const datesToRemove: string[] = selectedBayDates.size > 0 
-                      ? Array.from(selectedBayDates) 
-                      : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                    if (datesToRemove.length > 0) {
-                      setUiDateAssignments(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${engineer.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                      setUiRosterOverrides(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${engineer.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                    }
-                    setDraggedItem(null);
-                  }
-                }}
-              >
-                <span className="text-blue-800 font-bold text-lg pointer-events-none">Drop here to remove</span>
-              </div>
-            )}
             <div className="font-semibold text-blue-800 mb-2 flex items-center gap-2 pointer-events-none">
               <User className="w-4 h-4" />
               Suggested Engineers ({displaySuggestedEngineers.length})
@@ -4255,19 +4496,6 @@ export function PlanningScenarioVisualizer() {
                 e.stopPropagation();
               }}
             >
-              {/* Drop overlay - shown when dragging a technician from suggested */}
-              {draggedItem?.type === 'technician' && draggedItem?.source === 'suggested' && (
-                <div
-                  className="absolute inset-0 z-50 bg-green-200/80 rounded-lg flex items-center justify-center cursor-pointer border-4 border-green-500"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = 'copy';
-                  }}
-                >
-                  <span className="text-green-800 font-bold text-lg pointer-events-none">Drop here to add to Core</span>
-                </div>
-              )}
               <div className="font-semibold text-green-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
                 Core Technicians ({coreTechnicianDetails.filter(t => !removedCoreTeamMembers.has(t.empId)).length + displayCoreTechnicians.length})
@@ -4416,85 +4644,6 @@ export function PlanningScenarioVisualizer() {
                 handleDropOnCoreSupport(e, 'technician');
               }}
             >
-              {/* Drop overlay - shown when dragging a technician from suggested */}
-              {draggedItem?.type === 'technician' && draggedItem?.source === 'suggested' && (
-                <div
-                  className="absolute inset-0 z-50 bg-green-200/80 rounded-lg flex items-center justify-center cursor-pointer border-4 border-green-500"
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.dataTransfer.dropEffect = 'copy';
-                  }}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('DROP on overlay - Core Support Technicians!');
-                    handleDropOnCoreSupport(e, 'technician');
-                  }}
-                  onMouseUp={() => {
-                    // NOTE: Applies to ALL selected bay dates
-                    console.log('MouseUp on overlay - Support Technicians!');
-                    if (draggedItem?.type === 'technician' && draggedItem?.source === 'suggested') {
-                      const technician = draggedItem.data as TechnicianDetails;
-                      const tailNum = selectedTask || '';
-                      const datesToAssign: string[] = selectedBayDates.size > 0 
-                        ? Array.from(selectedBayDates) 
-                        : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                      if (datesToAssign.length > 0) {
-                        setUiDateAssignments(prev => {
-                          const newMap = new Map(prev);
-                          datesToAssign.forEach(date => {
-                            newMap.set(`${technician.empId}-${date}`, { zone: 'support', tail: tailNum });
-                          });
-                          return newMap;
-                        });
-                        if (tailNum) {
-                          setUiRosterOverrides(prev => {
-                            const newMap = new Map(prev);
-                            datesToAssign.forEach(date => {
-                              newMap.set(`${technician.empId}-${date}`, { support: tailNum });
-                            });
-                            return newMap;
-                          });
-                        }
-                      }
-                      setDraggedItem(null);
-                    }
-                  }}
-                  onClick={() => {
-                    // NOTE: Applies to ALL selected bay dates
-                    console.log('Click on overlay - Support Technicians!');
-                    if (draggedItem?.type === 'technician' && draggedItem?.source === 'suggested') {
-                      const technician = draggedItem.data as TechnicianDetails;
-                      const tailNum = selectedTask || '';
-                      const datesToAssign: string[] = selectedBayDates.size > 0 
-                        ? Array.from(selectedBayDates) 
-                        : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                      if (datesToAssign.length > 0) {
-                        setUiDateAssignments(prev => {
-                          const newMap = new Map(prev);
-                          datesToAssign.forEach(date => {
-                            newMap.set(`${technician.empId}-${date}`, { zone: 'support', tail: tailNum });
-                          });
-                          return newMap;
-                        });
-                        if (tailNum) {
-                          setUiRosterOverrides(prev => {
-                            const newMap = new Map(prev);
-                            datesToAssign.forEach(date => {
-                              newMap.set(`${technician.empId}-${date}`, { support: tailNum });
-                            });
-                            return newMap;
-                          });
-                        }
-                      }
-                      setDraggedItem(null);
-                    }
-                  }}
-                >
-                  <span className="text-green-800 font-bold text-lg pointer-events-none">Drop here to add (or click)</span>
-                </div>
-              )}
               <div className="font-semibold text-green-800 mb-2 flex items-center gap-2 pointer-events-none">
                 <User className="w-4 h-4" />
                 Support Technicians ({supportTechnicianDetails.filter(t => !removedSupportMembers.has(t.empId)).length + displaySupportTechnicians.length})
@@ -4649,81 +4798,6 @@ export function PlanningScenarioVisualizer() {
               handleDropOnSuggested(e, 'technician');
             }}
           >
-            {/* Drop overlay - shown when dragging a technician from core or support */}
-            {draggedItem?.type === 'technician' && (draggedItem?.source === 'core' || draggedItem?.source === 'support') && (
-              <div
-                className="absolute inset-0 z-50 bg-green-200/80 rounded-lg flex items-center justify-center cursor-copy"
-                onDragOver={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  e.dataTransfer.dropEffect = 'copy';
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  console.log('DROP on overlay - Suggested Technicians!');
-                  handleDropOnSuggested(e, 'technician');
-                }}
-                onMouseUp={() => {
-                  // NOTE: Removes assignment for ALL selected bay dates
-                  if (draggedItem?.type === 'technician' && (draggedItem?.source === 'core' || draggedItem?.source === 'support')) {
-                    console.log('MouseUp on Suggested Technicians overlay - processing drop');
-                    const tech = draggedItem.data as TechnicianDetails;
-                    const datesToRemove: string[] = selectedBayDates.size > 0 
-                      ? Array.from(selectedBayDates) 
-                      : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                    if (datesToRemove.length > 0) {
-                      setUiDateAssignments(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${tech.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                      setUiRosterOverrides(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${tech.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                    }
-                    setDraggedItem(null);
-                    setActiveDropZone(null);
-                  }
-                }}
-                onClick={() => {
-                  // NOTE: Removes assignment for ALL selected bay dates
-                  if (draggedItem?.type === 'technician' && (draggedItem?.source === 'core' || draggedItem?.source === 'support')) {
-                    console.log('Click on Suggested Technicians overlay - processing drop');
-                    const tech = draggedItem.data as TechnicianDetails;
-                    const datesToRemove: string[] = selectedBayDates.size > 0 
-                      ? Array.from(selectedBayDates) 
-                      : (selectedDate || displayDates[0] ? [selectedDate || displayDates[0]] : []);
-                    if (datesToRemove.length > 0) {
-                      setUiDateAssignments(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${tech.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                      setUiRosterOverrides(prev => {
-                        const newMap = new Map(prev);
-                        datesToRemove.forEach(date => {
-                          newMap.delete(`${tech.empId}-${date}`);
-                        });
-                        return newMap;
-                      });
-                    }
-                    setDraggedItem(null);
-                    setActiveDropZone(null);
-                  }
-                }}
-              >
-                <span className="text-green-800 font-bold text-lg">Drop here to remove</span>
-              </div>
-            )}
             <div className="font-semibold text-green-800 mb-2 flex items-center gap-2 pointer-events-none">
               <User className="w-4 h-4" />
               Suggested Technicians ({displaySuggestedTechnicians.length})
@@ -5036,24 +5110,17 @@ export function PlanningScenarioVisualizer() {
                 {/* Row 2: Date columns */}
                 <div className="flex">
                   {displayDates.map((date, idx) => {
-                    const isSelected = date === selectedDate;
-                    const isBaySelected = selectedBayDates.has(date);
                     return (
                       <div
                         key={date}
                         className={`
                           flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
-                          cursor-pointer transition-all relative select-none
-                          ${isBaySelected
-                            ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                            : isSelected
-                              ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                              : idx === todayIndex
-                                ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          select-none
+                          ${idx === todayIndex
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-gray-100 text-gray-700'
                           }
                         `}
-                        onClick={(e) => handleBayDateClick(date, e)}
                       >
                         {formatDate(date)}
                       </div>
@@ -5136,9 +5203,6 @@ export function PlanningScenarioVisualizer() {
                           ? CELL_COLORS.TAIL  // Green background for tail numbers
                           : getCellColors(displayValue);  // Standard roster code colors
 
-                      const isSelectedDate = date === selectedDate;
-                      const isBayDateSelected = selectedBayDates.has(date);
-
                       // Calculate expired training overlay opacity for this employee-date
                       const expiredTrainingOpacity = getExpiredTrainingOpacity(engineer.id, date);
 
@@ -5150,16 +5214,7 @@ export function PlanningScenarioVisualizer() {
                       return (
                         <div
                           key={date}
-                          onClick={(e) => handleBayDateClick(date, e)}
-                          className={`
-                            flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center cursor-pointer
-                            ${isBayDateSelected 
-                              ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset' 
-                              : isSelectedDate 
-                                ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset' 
-                                : ''
-                            }
-                          `}
+                          className="flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center"
                           title={expiredTrainingsTooltip || undefined}
                         >
                           {/* Expired training red overlay - translucent gradient that increases over time */}
@@ -5168,14 +5223,6 @@ export function PlanningScenarioVisualizer() {
                               className="absolute inset-0 pointer-events-none z-[1]" 
                               style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
                             />
-                          )}
-                          {/* Multi-selected column highlight band */}
-                          {isBayDateSelected && (
-                            <div className="absolute inset-0 bg-blue-500/20 pointer-events-none z-[2]"></div>
-                          )}
-                          {/* Selected column highlight band */}
-                          {isSelectedDate && !isBayDateSelected && (
-                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none z-[2]"></div>
                           )}
                           <div className="relative z-10">
                             {displayValue ? (
@@ -5416,6 +5463,9 @@ export function PlanningScenarioVisualizer() {
 
                         const isBayDateSelected = selectedBayDates.has(date);
                         
+                        // Check if this is a simulated aircraft (2 or more hyphens in tail number)
+                        const isSimulatedAircraft = tail ? (tail.match(/-/g) || []).length >= 2 : false;
+                        
                         // Check if this cell should be highlighted green
                         const isBayColumnIntersection = selectedBayRowForHighlight === bayNum && selectedBayDates.has(date);
                         
@@ -5445,13 +5495,20 @@ export function PlanningScenarioVisualizer() {
                             onClick={(e) => {
                               e.stopPropagation();
                               setSelectedDate(date);
+                              
+                              // Track if we'll have dates selected after this action
+                              let willHaveDatesSelected = selectedBayDates.size > 0;
+                              
                               if (!selectedBayDates.has(date)) {
                                 const newSelected = new Set(selectedBayDates);
                                 newSelected.add(date);
                                 setSelectedBayDates(newSelected);
                                 setLastClickedBayDate(date);
+                                willHaveDatesSelected = true; // We just added a date
                               }
-                              if (selectedBayDates.size > 0) {
+                              
+                              // Only toggle row highlight if we have dates selected AND there's an allocation
+                              if (willHaveDatesSelected && allocation) {
                                 setSelectedBayRowForHighlight(prev => prev === bayNum ? null : bayNum);
                               }
                             }}
@@ -5462,7 +5519,9 @@ export function PlanningScenarioVisualizer() {
                                 : allocation
                                   ? isHighlightedTail
                                     ? 'bg-yellow-400 hover:bg-yellow-500 ring-2 ring-yellow-600 ring-inset'
-                                    : 'bg-blue-500 hover:bg-blue-600'
+                                    : isSimulatedAircraft
+                                      ? 'bg-orange-400 hover:bg-orange-500'
+                                      : 'bg-blue-500 hover:bg-blue-600'
                                   : isBayDateSelected 
                                     ? 'bg-blue-100/70' 
                                     : ''
@@ -5493,7 +5552,7 @@ export function PlanningScenarioVisualizer() {
                             {/* Tail number label spanning multiple cells */}
                             {showLabel && allocation && (
                               <div
-                                className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${isBayColumnIntersection ? 'text-green-900' : isHighlightedTail ? 'text-yellow-900' : isBayDateSelected ? 'text-blue-900' : 'text-white'}`}
+                                className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${isBayColumnIntersection ? 'text-green-900' : isHighlightedTail ? 'text-yellow-900' : isSimulatedAircraft ? 'text-orange-900' : isBayDateSelected ? 'text-blue-900' : 'text-white'}`}
                                 style={{ width: `${span * 80}px` }}
                               >
                                 {allocation.aircraft.aircraft_reg}
@@ -5518,6 +5577,10 @@ export function PlanningScenarioVisualizer() {
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 bg-blue-500 rounded"></div>
             <span className="font-medium">Scheduled Aircraft</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-orange-400 rounded"></div>
+            <span className="font-medium">Simulated Aircraft</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 bg-yellow-400 ring-2 ring-yellow-600 rounded"></div>
