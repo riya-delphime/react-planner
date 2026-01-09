@@ -2815,8 +2815,20 @@ export function WorkforcePlanning() {
                                   // Check if simulated aircraft (2+ hyphens)
                                   const isSimulatedAircraft = tail ? (tail.match(/-/g) || []).length >= 2 : false;
                                   
+                                  // Check if historical (past) or future date for color differentiation
+                                  const isHistoricalDate = date < CURRENT_DATE;
+                                  
                                   // Multi-date focus: Check if this cell is part of the selected tail allocation
                                   const isSelectedTail = selectedTailAllocation?.tail === tail && selectedTailAllocation?.dates.includes(date);
+
+                                  // Determine background color class based on type and date
+                                  const getBayAllocationColor = () => {
+                                    if (!allocation) return '';
+                                    if (isSelectedTail) return 'bg-emerald-600 hover:bg-emerald-700 ring-2 ring-emerald-400 ring-inset';
+                                    if (isSimulatedAircraft) return 'bg-gray-400 hover:bg-gray-500'; // Grey for simulated
+                                    if (isHistoricalDate) return 'bg-blue-700 hover:bg-blue-800'; // Darker blue for historical
+                                    return 'bg-blue-500 hover:bg-blue-600'; // Normal blue for future
+                                  };
 
                                   return (
                                     <div
@@ -2839,11 +2851,7 @@ export function WorkforcePlanning() {
                                       className={`
                                         flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center cursor-pointer select-none
                                         ${allocation
-                                          ? isSelectedTail
-                                            ? 'bg-emerald-600 hover:bg-emerald-700 ring-2 ring-emerald-400 ring-inset'
-                                            : isSimulatedAircraft
-                                              ? 'bg-orange-400 hover:bg-orange-500'
-                                              : 'bg-blue-500 hover:bg-blue-600'
+                                          ? getBayAllocationColor()
                                           : isBayDateSelected 
                                             ? 'bg-blue-100/70' 
                                             : ''
@@ -2862,7 +2870,7 @@ export function WorkforcePlanning() {
                                       {showLabel && allocation && (
                                         <div
                                           className={`absolute top-0 left-0 h-full flex items-center justify-center text-[10px] font-bold pointer-events-none z-10 truncate px-1 ${
-                                            isSimulatedAircraft ? 'text-orange-900' : 'text-white'
+                                            isSimulatedAircraft ? 'text-gray-800' : 'text-white'
                                           }`}
                                           style={{ width: `${span * 80}px` }}
                                         >
@@ -2888,11 +2896,15 @@ export function WorkforcePlanning() {
                 {/* Legend Footer */}
                 <div className="p-3 flex gap-6 text-sm border-t-2 border-gray-800 flex-wrap">
                   <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 bg-blue-500 rounded"></div>
-                    <span className="font-medium">Scheduled Aircraft</span>
+                    <div className="w-4 h-4 bg-blue-700 rounded"></div>
+                    <span className="font-medium">Historical Visit (Past)</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <div className="w-4 h-4 bg-orange-400 rounded"></div>
+                    <div className="w-4 h-4 bg-blue-500 rounded"></div>
+                    <span className="font-medium">Scheduled Visit (Future)</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-4 h-4 bg-gray-400 rounded"></div>
                     <span className="font-medium">Simulated Aircraft</span>
                   </div>
                   <div className="flex items-center gap-2">
