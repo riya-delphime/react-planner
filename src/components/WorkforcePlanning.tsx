@@ -199,6 +199,16 @@ export function WorkforcePlanning() {
   } | null>(null);
   const [isBayDataLoading, setIsBayDataLoading] = useState(false);
 
+  // =========================================================================
+  // REPLAN MULTI-SELECTION STATE
+  // =========================================================================
+  // Multi-date selection for Replan feature (only future dates allowed)
+  const [replanSelectedDates, setReplanSelectedDates] = useState<Set<string>>(new Set());
+  // Track last clicked date for Shift+Click range selection
+  const [lastClickedDate, setLastClickedDate] = useState<string | null>(null);
+  // Show Replan modal
+  const [showReplanModal, setShowReplanModal] = useState(false);
+
   // Employee detail drawer state
   const [showEmployeeDrawer, setShowEmployeeDrawer] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<WorkforceGridRow | null>(null);
@@ -1317,6 +1327,91 @@ export function WorkforcePlanning() {
     }
   };
 
+  // =========================================================================
+  // REPLAN: Multi-date selection handler
+  // Supports: Click (toggle), Shift+Click (range)
+  // Only allows FUTURE dates for replan selection
+  // Behavior matches PlanningScenarioVisualizer.tsx - simple click toggles selection
+  // =========================================================================
+  const handleDateColumnClick = useCallback((dateStr: string, event: React.MouseEvent) => {
+    // Debug logging
+    console.log('[Replan Click]', {
+      date: dateStr,
+      isFuture: dateStr > CURRENT_DATE,
+      shiftKey: event.shiftKey,
+      currentSelection: Array.from(replanSelectedDates),
+      CURRENT_DATE
+    });
+
+    // Only allow future dates for replan multi-selection
+    const isFutureDate = dateStr > CURRENT_DATE;
+
+    if (!isFutureDate) {
+      // Past/current date - just single select (existing behavior)
+      console.log('[Replan] Past/current date - clearing selection');
+      setSelectedDate(dateStr);
+      setSelectedTailAllocation(null);
+      // Clear replan selection when clicking past date
+      setReplanSelectedDates(new Set());
+      setLastClickedDate(null);
+      return;
+    }
+
+    // Future date - handle selection
+    if (event.shiftKey && lastClickedDate) {
+      // Shift + Click: Range select from last clicked to current
+      console.log('[Replan] Shift+Click detected - range select');
+      const lastIdx = dateRange.indexOf(lastClickedDate);
+      const currentIdx = dateRange.indexOf(dateStr);
+      
+      if (lastIdx !== -1 && currentIdx !== -1) {
+        const startIdx = Math.min(lastIdx, currentIdx);
+        const endIdx = Math.max(lastIdx, currentIdx);
+        
+        // Select all future dates in range
+        const rangeDates = dateRange
+          .slice(startIdx, endIdx + 1)
+          .filter(d => d > CURRENT_DATE);
+        
+        console.log('[Replan] Range dates:', rangeDates);
+        setReplanSelectedDates(prev => {
+          const newSet = new Set(prev);
+          rangeDates.forEach(d => newSet.add(d));
+          return newSet;
+        });
+      }
+      setSelectedDate(dateStr);
+    } else {
+      // Normal click: Toggle selection (add if not present, remove if present)
+      // This matches PlanningScenarioVisualizer.tsx behavior
+      console.log('[Replan] Normal click - toggling date');
+      setReplanSelectedDates(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(dateStr)) {
+          newSet.delete(dateStr);  // Deselect if already selected
+          console.log('[Replan] Removed from selection:', dateStr);
+          // If this was selectedDate, update to another or clear
+          if (newSet.size > 0) {
+            setSelectedDate(Array.from(newSet)[0]);
+          }
+        } else {
+          newSet.add(dateStr);     // Add to selection
+          console.log('[Replan] Added to selection:', dateStr);
+          setSelectedDate(dateStr);
+        }
+        return newSet;
+      });
+      setLastClickedDate(dateStr);
+      setSelectedTailAllocation(null);
+    }
+  }, [dateRange, lastClickedDate, replanSelectedDates]);
+
+  // Clear replan selection
+  const clearReplanSelection = useCallback(() => {
+    setReplanSelectedDates(new Set());
+    setLastClickedDate(null);
+  }, []);
+
   // Load replacement candidates for an alert
   const loadReplacementCandidates = async (alert: AlertData) => {
     const alertKey = `${alert.empId}-${alert.date}`;
@@ -2271,45 +2366,60 @@ export function WorkforcePlanning() {
                 </div>
                 {/* Row 2: Date columns */}
                 <div className="flex">
-                  {filteredDateRange.map((dateStr) => {
-                    const isSelected = dateStr === selectedDate;
-                    // Multi-date focus: Check if this date is part of selected tail allocation
-                    const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
-                    const zone = getDateZone(dateStr, CURRENT_DATE);
+                {filteredDateRange.map((dateStr) => {
+                                    const isSelected = dateStr === selectedDate;
+                                    // Multi-date focus: Check if this date is part of selected tail allocation
+                                    const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
+                                    // Replan multi-selection: Check if date is in replan selection
+                                    const isReplanSelected = replanSelectedDates.has(dateStr);
+                                    const zone = getDateZone(dateStr, CURRENT_DATE);
+                                    const isFuture = dateStr > CURRENT_DATE;
 
-                    return (
-                      <div
-                        key={dateStr}
-                        ref={isSelected ? selectedColumnRef : null}
-                        className={`
-                          flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
-                          cursor-pointer transition-all relative
-                          ${isSelected
-                            ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                            : isInTailAllocation
-                              ? 'bg-emerald-500 text-white ring-2 ring-emerald-600 ring-inset z-10'
-                              : zone === 'past'
-                                ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                                : zone === 'current'
-                                  ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                  : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                          }
-                        `}
-                        onClick={() => {
-                          setSelectedDate(dateStr);
-                          // Clear tail allocation AND reset filter when clicking directly on date header
-                          setSelectedTailAllocation(null);
-                          setSearchQuery('');  // Reset filter to show all employees
-                        }}
-                        title={`Click to select ${formatDateForHeader(dateStr)}${isInTailAllocation ? ` (${selectedTailAllocation?.tail} visit)` : ''}`}
-                      >
-                        {formatDateForHeader(dateStr)}
-                        {dateStr === CURRENT_DATE && !isSelected && !isInTailAllocation && (
-                          <div className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-amber-500 rounded-full"></div>
-                        )}
-                      </div>
-                    );
-                  })}
+                                    return (
+                                      <div
+                                        key={dateStr}
+                                        ref={isSelected ? selectedColumnRef : null}
+                                        className={`
+                                          flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
+                                          cursor-pointer transition-all relative select-none
+                                          ${isReplanSelected
+                                            ? 'bg-teal-500 text-white ring-2 ring-teal-400 ring-inset z-10'
+                                            : isSelected
+                                              ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
+                                              : isInTailAllocation
+                                                ? 'bg-emerald-500 text-white ring-2 ring-emerald-600 ring-inset z-10'
+                                                : zone === 'past'
+                                                  ? 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                                                  : zone === 'current'
+                                                    ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                                    : isFuture
+                                                      ? 'bg-gray-200 text-gray-600 hover:bg-teal-100'
+                                                      : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                                          }
+                                        `}
+                                        onClick={(e) => {
+                                          handleDateColumnClick(dateStr, e);
+                                          // Clear tail allocation AND reset filter when clicking directly on date header
+                                          if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                                            setSearchQuery('');  // Reset filter to show all employees
+                                          }
+                                        }}
+                                        title={`${formatDateForHeader(dateStr)}${isInTailAllocation ? ` (${selectedTailAllocation?.tail} visit)` : ''}${isFuture ? ' • Click to toggle selection for Replan' : ''}`}
+                                      >
+                                        {formatDateForHeader(dateStr)}
+                                        {/* Today indicator dot */}
+                                        {dateStr === CURRENT_DATE && !isSelected && !isInTailAllocation && (
+                                          <div className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 bg-amber-500 rounded-full"></div>
+                                        )}
+                                        {/* Replan selection checkmark for all multi-selected dates */}
+                                        {isReplanSelected && (
+                                          <div className="absolute top-0.5 right-0.5 w-3 h-3 bg-white rounded-full flex items-center justify-center">
+                                            <Check className="w-2 h-2 text-teal-600" />
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                 </div>
               </div>
 
@@ -2325,63 +2435,71 @@ export function WorkforcePlanning() {
                     className={`flex border-b border-gray-300 h-8 ${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}`}
                   >
                     {filteredDateRange.map((dateStr) => {
-                      const cellData = row.dailyData.get(dateStr);
-                      const isSelected = dateStr === selectedDate;
-                      // Multi-date focus: Check if this date is part of selected tail allocation
-                      const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
-                      // Check if this cell has an alert (no-show or leave)
-                      const cellKey = `${row.empId}-${dateStr}`;
-                      const hasAlert = alertCellKeys.has(cellKey);
+                                      const cellData = row.dailyData.get(dateStr);
+                                      const isSelected = dateStr === selectedDate;
+                                      // Multi-date focus: Check if this date is part of selected tail allocation
+                                      const isInTailAllocation = selectedTailAllocation?.dates.includes(dateStr) ?? false;
+                                      // Replan multi-selection: Check if date is in replan selection
+                                      const isReplanSelected = replanSelectedDates.has(dateStr);
+                                      // Check if this cell has an alert (no-show or leave)
+                                      const cellKey = `${row.empId}-${dateStr}`;
+                                      const hasAlert = alertCellKeys.has(cellKey);
 
-                      // Check for UI override (demo mode updates)
-                      const override = cellOverrides.get(cellKey);
-                      const displayValue = override?.displayValue ?? cellData?.displayValue;
-                      // If override exists and is NO SHOW, treat as having alert styling
-                      const shouldShowAsNoShow = override?.isNoShow || hasAlert;
+                                      // Check for UI override (demo mode updates)
+                                      const override = cellOverrides.get(cellKey);
+                                      const displayValue = override?.displayValue ?? cellData?.displayValue;
+                                      // If override exists and is NO SHOW, treat as having alert styling
+                                      const shouldShowAsNoShow = override?.isNoShow || hasAlert;
 
-                      // Calculate expired training overlay opacity for future dates only
-                      const expiredTrainingOpacity = getExpiredTrainingOpacity(row.empId, dateStr);
-                      
-                      // Get expired trainings tooltip for hover
-                      const expiredTrainingsTooltip = expiredTrainingOpacity > 0 
-                        ? getExpiredTrainingsTooltip(row.empId, dateStr)
-                        : '';
+                                      // Calculate expired training overlay opacity for future dates only
+                                      const expiredTrainingOpacity = getExpiredTrainingOpacity(row.empId, dateStr);
+                                      
+                                      // Get expired trainings tooltip for hover
+                                      const expiredTrainingsTooltip = expiredTrainingOpacity > 0 
+                                        ? getExpiredTrainingsTooltip(row.empId, dateStr)
+                                        : '';
 
-                      return (
-                        <div
-                          key={dateStr}
-                          className={`
-                            flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center
-                            ${isSelected
-                              ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset'
-                              : isInTailAllocation
-                                ? 'bg-emerald-100/70 ring-1 ring-emerald-400 ring-inset'
-                                : ''
-                            }
-                          `}
-                          title={expiredTrainingsTooltip || undefined}
-                        >
-                          {/* Expired training red overlay - translucent gradient that increases over time (future dates only) */}
-                          {expiredTrainingOpacity > 0 && (
-                            <div 
-                              className="absolute inset-0 pointer-events-none z-[1]" 
-                              style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
-                            />
-                          )}
-                          {/* Multi-date tail allocation highlight band */}
-                          {isInTailAllocation && !isSelected && (
-                            <div className="absolute inset-0 bg-emerald-500/15 pointer-events-none z-[2]"></div>
-                          )}
-                          {/* Selected column highlight band */}
-                          {isSelected && (
-                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none z-[2]"></div>
-                          )}
-                          <div className="relative z-10">
-                            {renderCell(displayValue, dateStr, searchMode && searchMode !== 'alert' ? searchQuery : undefined, shouldShowAsNoShow)}
-                          </div>
-                        </div>
-                      );
-                    })}
+                                      return (
+                                        <div
+                                          key={dateStr}
+                                          className={`
+                                            flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center
+                                            ${isReplanSelected
+                                              ? 'bg-teal-100/70 ring-1 ring-teal-400 ring-inset'
+                                              : isSelected
+                                                ? 'bg-blue-100/70 ring-1 ring-blue-400 ring-inset'
+                                                : isInTailAllocation
+                                                  ? 'bg-emerald-100/70 ring-1 ring-emerald-400 ring-inset'
+                                                  : ''
+                                            }
+                                          `}
+                                          title={expiredTrainingsTooltip || undefined}
+                                        >
+                                          {/* Expired training red overlay - translucent gradient that increases over time (future dates only) */}
+                                          {expiredTrainingOpacity > 0 && (
+                                            <div 
+                                              className="absolute inset-0 pointer-events-none z-[1]" 
+                                              style={{ backgroundColor: `rgba(220, 38, 38, ${expiredTrainingOpacity})` }}
+                                            />
+                                          )}
+                                          {/* Replan multi-select highlight band (takes priority) */}
+                                          {isReplanSelected && (
+                                            <div className="absolute inset-0 bg-teal-500/15 pointer-events-none z-[2]"></div>
+                                          )}
+                                          {/* Multi-date tail allocation highlight band */}
+                                          {isInTailAllocation && !isReplanSelected && (
+                                            <div className="absolute inset-0 bg-emerald-500/15 pointer-events-none z-[2]"></div>
+                                          )}
+                                          {/* Selected column highlight band (only when not in replan selection) */}
+                                          {isSelected && !isReplanSelected && (
+                                            <div className="absolute inset-0 bg-blue-500/10 pointer-events-none z-[2]"></div>
+                                          )}
+                                          <div className="relative z-10">
+                                            {renderCell(displayValue, dateStr, searchMode && searchMode !== 'alert' ? searchQuery : undefined, shouldShowAsNoShow)}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
                   </div>
                 ))}
               </div>
@@ -2455,6 +2573,12 @@ export function WorkforcePlanning() {
             <div className="flex items-center gap-2">
               <div className={`w-4 h-4 ${CELL_COLORS.HOUSEKEEPING.bg} rounded`}></div>
               <span className="text-xs font-medium text-slate-700">Miscellaneous (Housekeeping, Night Shift, Movement etc.)</span>
+            </div>
+
+            {/* Replan Selection - Teal */}
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 bg-teal-500 rounded ring-2 ring-teal-400"></div>
+              <span className="text-xs font-medium text-slate-700">Replan Selection (Click to toggle)</span>
             </div>
           </div>
         </div>
@@ -2728,24 +2852,38 @@ export function WorkforcePlanning() {
                         {/* Row 2: Date columns */}
                         <div className="flex">
                           {dateRange.map((date, idx) => {
-                                            const isBaySelected = date === selectedDate;  // Reusing selectedDate state
-                                            const isToday = date === CURRENT_DATE;
-                                            return (
-                                              <div
-                                                key={date}
-                                                onClick={() => setSelectedDate(date)}  // Simplified - single state update
+                            const isBaySelected = date === selectedDate;
+                            const isToday = date === CURRENT_DATE;
+                            const isReplanSelected = replanSelectedDates.has(date);
+                            const isFuture = date > CURRENT_DATE;
+
+                            return (
+                              <div
+                                key={date}
+                                onClick={(e) => handleDateColumnClick(date, e)}
                                 className={`
                                   flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
                                   cursor-pointer transition-all relative select-none
-                                  ${isBaySelected
-                                    ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
-                                    : isToday
-                                      ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
-                                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  ${isReplanSelected
+                                    ? 'bg-teal-500 text-white ring-2 ring-teal-400 ring-inset z-10'
+                                    : isBaySelected
+                                      ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
+                                      : isToday
+                                        ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                                        : isFuture
+                                          ? 'bg-gray-100 text-gray-700 hover:bg-teal-100'
+                                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                                   }
                                 `}
+                                title={`${formatDateForHeader(date)}${isFuture ? ' • Click to toggle selection for Replan' : ''}`}
                               >
                                 {formatDateForHeader(date)}
+                                {/* Replan selection checkmark for all selected dates */}
+                                {isReplanSelected && (
+                                  <div className="absolute top-0.5 right-0.5 w-3 h-3 bg-white rounded-full flex items-center justify-center">
+                                    <Check className="w-2 h-2 text-teal-600" />
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -2925,6 +3063,133 @@ export function WorkforcePlanning() {
           </>
         )}
       </div>
+
+      {/* ================================================================== */}
+      {/* FLOATING REPLAN BUTTON - Appears when dates are multi-selected */}
+      {/* ================================================================== */}
+      {/* {replanSelectedDates.size > 0 && (
+        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-3">
+          {/* Selection info pill */}
+          {/* <div className="bg-white/95 backdrop-blur-sm rounded-full px-4 py-2 shadow-lg border border-gray-200 flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-700">
+              {replanSelectedDates.size} date{replanSelectedDates.size > 1 ? 's' : ''} selected
+            </span>
+            <span className="text-xs text-gray-500">
+              ({Array.from(replanSelectedDates).sort().map(d => formatDateForHeader(d)).join(', ')})
+            </span>
+          </div> */}
+
+          {/* Clear selection button */}
+          {/* <button
+            onClick={clearReplanSelection}
+            className="p-3 bg-white rounded-full shadow-lg border border-gray-200 text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-colors"
+            title="Clear selection"
+          >
+            <X className="w-5 h-5" />
+          </button> */}
+
+          {/* Replan button */}
+          {/* <button
+            onClick={() => setShowReplanModal(true)}
+            className="px-6 py-3 bg-gradient-to-r from-teal-500 to-teal-600 text-white font-bold rounded-full shadow-lg hover:from-teal-600 hover:to-teal-700 transition-all transform hover:scale-105 flex items-center gap-2"
+          >
+            <RotateCcw className="w-5 h-5" />
+            Replan Selected
+          </button>
+        </div>
+      )} */}
+
+      {/* ================================================================== */}
+      {/* REPLAN MODAL - Uses Scenario Visualizer workflow */}
+      {/* ================================================================== */}
+      {showReplanModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-[95vw] max-w-[1400px] max-h-[90vh] overflow-hidden flex flex-col">
+            {/* Modal Header */}
+            <div className="bg-gradient-to-r from-teal-500 to-teal-600 p-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <RotateCcw className="text-white" size={24} />
+                <div>
+                  <h3 className="text-xl font-bold text-white">
+                    Replan Assignments
+                  </h3>
+                  <p className="text-teal-100 text-sm">
+                    {replanSelectedDates.size} date{replanSelectedDates.size > 1 ? 's' : ''} selected: {Array.from(replanSelectedDates).sort().map(d => formatDateForHeader(d)).join(', ')}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowReplanModal(false)}
+                className="p-2 hover:bg-white/20 rounded-lg transition-colors"
+              >
+                <X className="text-white" size={24} />
+              </button>
+            </div>
+
+            {/* Modal Content - Placeholder for Scenario Visualizer integration */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="bg-teal-50 border-2 border-teal-200 rounded-xl p-6 mb-6">
+                <h4 className="font-bold text-teal-800 mb-2">Selected Dates for Replan:</h4>
+                <div className="flex flex-wrap gap-2">
+                  {Array.from(replanSelectedDates).sort().map(date => (
+                    <span
+                      key={date}
+                      className="px-3 py-1 bg-teal-500 text-white rounded-full text-sm font-medium"
+                    >
+                      {formatDateForHeader(date)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Placeholder content - will be replaced with Scenario Visualizer */}
+              <div className="bg-gray-100 rounded-xl p-8 text-center">
+                <div className="text-gray-400 mb-4">
+                  <Settings className="w-16 h-16 mx-auto" />
+                </div>
+                <h4 className="text-xl font-semibold text-gray-600 mb-2">
+                  Scenario Visualizer Integration
+                </h4>
+                <p className="text-gray-500 max-w-md mx-auto mb-4">
+                  This modal will integrate with the existing PlanningScenarioVisualizer 
+                  workflow and RPCs to allow replanning of assignments for the selected dates.
+                </p>
+                <p className="text-sm text-gray-400">
+                  Selected tails and employees from the grid will be pre-filtered here.
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="border-t border-gray-200 p-4 flex justify-between items-center bg-gray-50">
+              <button
+                onClick={() => {
+                  setShowReplanModal(false);
+                  clearReplanSelection();
+                }}
+                className="px-6 py-2 border-2 border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    // TODO: Integrate with Scenario Visualizer RPCs
+                    console.log('Committing replan for dates:', Array.from(replanSelectedDates));
+                    setShowReplanModal(false);
+                    clearReplanSelection();
+                    // Refresh page to show updated data
+                    window.location.reload();
+                  }}
+                  className="px-6 py-2 bg-teal-600 text-white font-semibold rounded-lg hover:bg-teal-700 transition-colors"
+                >
+                  Commit & Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ================================================================== */}
       {/* ALERT DETAILS MODAL */}
