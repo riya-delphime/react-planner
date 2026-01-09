@@ -272,6 +272,41 @@ export function WorkforcePlanning() {
     allScenarios.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     
     setSavedScenarios(allScenarios);
+
+    // AUTO-LOAD DEFAULT SCENARIO from scenario_active_state table
+    try {
+      const { data: activeScenarioData, error: activeError } = await supabase
+        .from('scenario_active_state')
+        .select('scenario_name')
+        .eq('isactive', true)
+        .single();
+
+      if (activeError) {
+        console.log('[WorkforcePlanning] No active scenario found or error:', activeError.message);
+      } else if (activeScenarioData?.scenario_name) {
+        // Find matching scenario in our loaded list
+        const matchingScenario = allScenarios.find(
+          s => s.scenario_name === activeScenarioData.scenario_name
+        );
+
+        if (matchingScenario) {
+          console.log('[WorkforcePlanning] Auto-selecting default scenario from DB:', matchingScenario.scenario_name);
+          setActiveScenario(matchingScenario.id);
+          
+          // Load the scenario data
+          const { gridData: data, dateRange: dates } = await loadScenarioData(matchingScenario.scenario_name, CURRENT_DATE);
+          setGridData(data);
+          setDateRange(dates);
+          calculateUtilization(data, dates, CURRENT_DATE);
+          
+          console.log('[WorkforcePlanning] Default scenario loaded successfully:', matchingScenario.scenario_name);
+        } else {
+          console.log('[WorkforcePlanning] Active scenario from DB not found in available scenarios:', activeScenarioData.scenario_name);
+        }
+      }
+    } catch (err) {
+      console.error('[WorkforcePlanning] Error loading default scenario:', err);
+    }
   }
 
 
@@ -1599,6 +1634,11 @@ export function WorkforcePlanning() {
                 Assignments & Roster Plan
               </h2>
               {/* Active Scenario Badge */}
+            </div>
+
+            {/* Date Selector */}
+            <div className="flex items-center gap-6">
+              <div>
               {activeScenario && (
                 <span className="text-sm font-semibold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
                   Active: {savedScenarios.find(s => s.id === activeScenario)?.scenario_name || activeScenario}
@@ -1612,10 +1652,7 @@ export function WorkforcePlanning() {
               >
                 <Settings className="w-5 h-5 text-slate-600" />
               </button>
-            </div>
-
-            {/* Date Selector */}
-            <div className="flex items-center gap-6">
+              </div>
               {/* Date Navigation */}
               <div className="flex items-center gap-2 bg-white rounded-lg px-2 py-1 shadow-sm border border-slate-200">
                 <button
