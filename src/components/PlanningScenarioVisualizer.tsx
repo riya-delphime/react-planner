@@ -170,6 +170,9 @@ export function PlanningScenarioVisualizer() {
   // When columns are selected and user clicks a bay, highlight those cells in green
   const [selectedBayRowForHighlight, setSelectedBayRowForHighlight] = useState<number | null>(null);
 
+  // When Bay number is clicked in Bay Info column, highlight entire row in yellow
+  const [yellowHighlightedBayRow, setYellowHighlightedBayRow] = useState<number | null>(null);
+
   // State for tail selection UI panel
   const [selectedTailDetails, setSelectedTailDetails] = useState<TailDetails | null>(null);
   
@@ -5110,17 +5113,21 @@ export function PlanningScenarioVisualizer() {
                 {/* Row 2: Date columns */}
                 <div className="flex">
                   {displayDates.map((date, idx) => {
+                    const isBaySelected = selectedBayDates.has(date);
                     return (
                       <div
                         key={date}
                         className={`
                           flex-shrink-0 w-20 px-1 py-1 text-xs font-bold text-center border-r border-gray-400
-                          select-none
-                          ${idx === todayIndex
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-gray-100 text-gray-700'
+                          cursor-pointer select-none transition-all relative
+                          ${isBaySelected
+                            ? 'bg-blue-500 text-white ring-2 ring-blue-600 ring-inset z-10'
+                            : idx === todayIndex
+                              ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                           }
                         `}
+                        onClick={(e) => handleBayDateClick(date, e)}
                       >
                         {formatDate(date)}
                       </div>
@@ -5211,12 +5218,21 @@ export function PlanningScenarioVisualizer() {
                         ? getExpiredTrainingsTooltip(engineer.id, date)
                         : '';
 
+                      // Check if this column is selected in Bay Occupancy Chart
+                      const isBayDateSelected = selectedBayDates.has(date);
+
                       return (
                         <div
                           key={date}
-                          className="flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center"
+                          className={`flex-shrink-0 w-20 px-1 text-center border-r border-gray-300 relative flex items-center justify-center ${isBayDateSelected ? 'bg-blue-100/70' : ''}`}
                           title={expiredTrainingsTooltip || undefined}
                         >
+                          {/* Column selection highlight overlay */}
+                          {isBayDateSelected && (
+                            <div 
+                              className="absolute inset-0 pointer-events-none z-0 border-l-2 border-r-2 border-blue-400"
+                            />
+                          )}
                           {/* Expired training red overlay - translucent gradient that increases over time */}
                           {expiredTrainingOpacity > 0 && (
                             <div 
@@ -5334,17 +5350,18 @@ export function PlanningScenarioVisualizer() {
                   const bayHasHighlightedTail = selectedTask && effectiveBayAllocations.some(
                     a => a.bayNumber === bayNum && a.aircraft.aircraft_reg === selectedTask
                   );
+                  // Check if this row is yellow-highlighted (clicked from Bay Info column)
+                  const isYellowHighlighted = yellowHighlightedBayRow === bayNum;
                   return (
                     <div
                       key={bayNum}
                       onClick={() => {
-                        if (selectedBayDates.size > 0) {
-                          setSelectedBayRowForHighlight(prev => prev === bayNum ? null : bayNum);
-                        }
+                        // Toggle yellow highlight for this bay row
+                        setYellowHighlightedBayRow(prev => prev === bayNum ? null : bayNum);
                       }}
                       className={`w-20 h-8 px-2 text-xs font-bold border-b border-gray-300 flex items-center justify-center cursor-pointer transition-colors ${
-                        selectedBayRowForHighlight === bayNum && selectedBayDates.size > 0
-                          ? 'text-green-900 ring-inset'
+                        isYellowHighlighted
+                          ? 'bg-yellow-400 text-yellow-900 ring-2 ring-yellow-500 ring-inset'
                           : bayHasHighlightedTail
                             ? 'bg-yellow-200 text-yellow-900'
                             : idx % 2 === 0 ? 'bg-gray-100 hover:bg-gray-200' : 'bg-gray-50 hover:bg-gray-100'
@@ -5410,6 +5427,9 @@ export function PlanningScenarioVisualizer() {
                   const bayRowHasHighlightedTail = selectedTask && effectiveBayAllocations.some(
                     a => a.bayNumber === bayNum && a.aircraft.aircraft_reg === selectedTask
                   );
+                  
+                  // Check if this row is yellow-highlighted (clicked from Bay Info column)
+                  const isRowYellowHighlighted = yellowHighlightedBayRow === bayNum;
 
                   // Helper to check if this is the first cell in a continuous span
                   const isFirstInSpan = (idx: number, tail: string | null) => {
@@ -5443,9 +5463,11 @@ export function PlanningScenarioVisualizer() {
                     <div
                       key={bayNum}
                       className={`flex border-b border-gray-300 h-8 ${
-                        bayRowHasHighlightedTail
-                          ? 'bg-yellow-100'
-                          : rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
+                        isRowYellowHighlighted
+                          ? 'bg-yellow-200 ring-2 ring-yellow-400 ring-inset'
+                          : bayRowHasHighlightedTail
+                            ? 'bg-yellow-100'
+                            : rowIdx % 2 === 0 ? 'bg-white' : 'bg-gray-50'
                       }`}
                     >
                       {displayDates.map((date, idx) => {
@@ -5528,19 +5550,6 @@ export function PlanningScenarioVisualizer() {
                               }
                             `}
                           >
-                            {/* Row-specific multi-day selection highlight with green dashed border */}
-                            {isInRowSelection && (
-                              <div 
-                                className="absolute inset-0 pointer-events-none z-20"
-                                style={{
-                                  borderTop: '3px dashed #22c55e',
-                                  borderBottom: '3px dashed #22c55e',
-                                  borderLeft: cellSelectionEdges.isFirst ? '3px dashed #22c55e' : 'none',
-                                  borderRight: cellSelectionEdges.isLast ? '3px dashed #22c55e' : 'none',
-                                  backgroundColor: 'rgba(34, 197, 94, 0.15)',
-                                }}
-                              />
-                            )}
                             {/* Multi-selected column highlight */}
                             {isBayDateSelected && !allocation && !isInRowSelection && (
                               <div className="absolute inset-0 bg-blue-500/20 pointer-events-none"></div>
