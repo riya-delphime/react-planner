@@ -3,11 +3,10 @@ import { PlanningScenarioBuilder } from './components/PlanningScenarioBuilder';
 import { PlanningScenarioVisualizer } from './components/PlanningScenarioVisualizer';
 import { ExecutiveOverview } from './components/ExecutiveOverview';
 import { WorkforcePlanning } from './components/WorkforcePlanning';
-import VisitIntake, { Visit } from './components/VisitIntake';
-import VisitsManager from './components/VisitsManager';
+import VisitDetails, { Visit } from './components/VisitDetails';
 import { getAllVisits, type VisitPlanningRecord, type BayDayWise } from './lib/visitData';
 
-type TabType = 'daily-planning' | 'scenario-builder' | 'scenario-visualizer' | 'executive-overview' | 'visit-intake' | 'visits-manager';
+type TabType = 'daily-planning' | 'scenario-builder' | 'scenario-visualizer' | 'executive-overview' | 'visit-details';
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabType>('executive-overview');
@@ -15,7 +14,6 @@ function App() {
   // Visits state
   const [visits, setVisits] = useState<Visit[]>([]);
   const [visitCounter, setVisitCounter] = useState(23);
-  const [duplicateVisitData, setDuplicateVisitData] = useState<Partial<Visit> | null>(null);
 
   // Reset scroll position on mount to prevent layout shift
   useEffect(() => {
@@ -177,23 +175,6 @@ function App() {
     fetchVisits();
   };
 
-  const handleDuplicateVisit = (visit: Visit) => {
-    // Create a copy with dates cleared - redirect to intake page for user to set dates
-    const duplicateData: Partial<Visit> = {
-      ...visit,
-      id: '', // Will be assigned by intake
-      inductionDate: '', // Clear dates - user must set new dates
-      etsDate: '',
-      dayWiseRequirements: {}, // Clear day-wise data since dates are cleared
-      bayDaywise: [],
-      status: 'Upcoming',
-      poConfirmed: false, // New visit needs PO confirmation
-      poNumber: '',
-    };
-    setDuplicateVisitData(duplicateData);
-    setActiveTab('visit-intake'); // Navigate to intake page
-  };
-
   const handleIncrementVisitCounter = () => {
     setVisitCounter(prev => prev + 1);
   };
@@ -227,26 +208,15 @@ function App() {
               {activeTab === 'executive-overview' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-white rounded-full"></div>}
             </button>
             <button
-              onClick={() => setActiveTab('visit-intake')}
+              onClick={() => setActiveTab('visit-details')}
               className={`flex-1 px-6 py-4 font-semibold text-base transition-all relative group ${
-                activeTab === 'visit-intake'
+                activeTab === 'visit-details'
                   ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg'
                   : 'text-slate-600 hover:text-blue-600 hover:bg-white/50'
               }`}
             >
-              Visit Intake & Requirements
-              {activeTab === 'visit-intake' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-white rounded-full"></div>}
-            </button>
-            <button
-              onClick={() => setActiveTab('visits-manager')}
-              className={`flex-1 px-6 py-4 font-semibold text-base transition-all relative group ${
-                activeTab === 'visits-manager'
-                  ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg'
-                  : 'text-slate-600 hover:text-blue-600 hover:bg-white/50'
-              }`}
-            >
-              Visits Manager
-              {activeTab === 'visits-manager' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-white rounded-full"></div>}
+              Visit Details
+              {activeTab === 'visit-details' && <div className="absolute bottom-0 left-0 right-0 h-1 bg-white rounded-full"></div>}
             </button>
             <button
               onClick={() => setActiveTab('daily-planning')}
@@ -302,23 +272,14 @@ function App() {
           <ExecutiveOverview />
         </div>
 
-        <div className={activeTab === 'visit-intake' ? '' : 'hidden'}>
-          <VisitIntake
+        <div className={activeTab === 'visit-details' ? '' : 'hidden'}>
+          <VisitDetails
             visits={visits}
             visitCounter={visitCounter}
             onAddVisit={handleAddVisit}
-            onIncrementCounter={handleIncrementVisitCounter}
-            duplicateVisitData={duplicateVisitData}
-            onClearDuplicateData={() => setDuplicateVisitData(null)}
-          />
-        </div>
-
-        <div className={activeTab === 'visits-manager' ? '' : 'hidden'}>
-          <VisitsManager
-            visits={visits}
             onUpdateVisit={handleUpdateVisit}
             onDeleteVisit={handleDeleteVisit}
-            onDuplicateVisit={handleDuplicateVisit}
+            onIncrementCounter={handleIncrementVisitCounter}
           />
         </div>
       </div>
