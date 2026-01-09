@@ -1587,3 +1587,231 @@ export async function applyAlertFix(
     };
   }
 }
+
+// =============================================================================
+// SCENARIO-BASED DATA LOADING
+// =============================================================================
+
+/**
+ * Interface for data returned from get_roster_with_scenario_overrides_with_trainings RPC
+ */
+interface ScenarioRosterRow {
+  id: string;        // emp_id
+  name: string;
+  team: string;
+  title: string;     // Role: CC, ENGR, TECH
+  date: string;
+  tail_num: string | null;
+  task: string;
+  planned_core: string | null;
+  planned_support: string | null;
+  bay: string | null;
+  expired_trainings: string | null;
+}
+
+/**
+ * Load workforce planning data for a specific scenario
+ * Uses get_roster_with_scenario_overrides_with_trainings RPC to fetch scenario-specific roster data
+ * 
+ * @param scenarioName - The name of the scenario to load
+ * @param currentDate - The reference "today" date (defaults to CURRENT_DATE)
+ * @returns Grid data and date range for the scenario
+ */
+export async function loadScenarioData(
+  scenarioName: string,
+  currentDate: string = CURRENT_DATE
+): Promise<{
+  gridData: WorkforceGridRow[];
+  dateRange: string[];
+  shiftCodes: Set<string>;
+}> {
+  console.log('[Scenario] Loading data for scenario:', scenarioName);
+
+  // Load shift codes for classification
+  const shiftCodes = await loadShiftCodes();
+
+  // Calculate date range (same as default view)
+  const winStartDate = getWindowStartDate(currentDate);
+  const winEndDate = getWindowEndDate(currentDate);
+  const dateRange = getDateRange(winStartDate, winEndDate);
+
+  // Fetch scenario roster data from RPC
+  const { data: scenarioData, error: scenarioError } = await supabase
+    .rpc('get_roster_with_scenario_overrides_with_trainings', { p_scenario_name: scenarioName })
+    .limit(100000);
+
+  if (scenarioError) {
+    console.error('[Scenario] Error loading scenario data:', scenarioError);
+    throw new Error(`Failed to load scenario: ${scenarioError.message}`);
+  }
+
+  console.log(`[Scenario] Loaded ${(scenarioData || []).length} rows for scenario: ${scenarioName}`);
+
+  // Transform scenario data into WorkforceGridRow format
+  const gridData = processScenarioData(scenarioData as ScenarioRosterRow[], dateRange, currentDate);
+
+  console.log(`[Scenario] Processed ${gridData.length} employees for scenario: ${scenarioName}`);
+
+  return {
+    gridData,
+    dateRange,
+    shiftCodes
+  };
+}
+
+/**
+ * Process scenario roster data into WorkforceGridRow format
+ * Similar to processGridData but handles ScenarioRosterRow structure
+ */
+function processScenarioData(
+  scenarioData: ScenarioRosterRow[],
+  dateRange: string[],
+  currentDate: string = CURRENT_DATE
+): WorkforceGridRow[] {
+  // Group records by employee ID
+  const employeeMap = new Map<string, {
+    id: string;
+    name: string;
+    team: string;
+    title: string;
+    dateRecords: Map<string, ScenarioRosterRow[]>;
+  }>();
+
+  // Process each scenario row
+  scenarioData.forEach(record => {
+    const empId = record.id;
+    const dateStr = normalizeDateToString(record.date);
+
+    if (!dateStr) {
+      return;
+    }
+
+    if (!employeeMap.has(empId)) {
+      employeeMap.set(empId, {
+        id: empId,
+        name: record.name,
+        team: record.team,
+        title: record.title || '',
+        dateRecords: new Map()
+      });
+    }
+
+    const empDateRecords = employeeMap.get(empId)!.dateRecords;
+    if (!empDateRecords.has(dateStr)) {
+      empDateRecords.set(dateStr, []);
+    }
+    empDateRecords.get(dateStr)!.push(record);
+  });
+
+  // Convert to WorkforceGridRow array
+  const gridRows: WorkforceGridRow[] = [];
+
+  employeeMap.forEach((empData, empId) => {
+    const dailyData = new Map<string, DailyCellData>();
+    const dateDetails = new Map<string, { plannedCore: string; plannedSupport: string; ttlLogin: string }>();
+
+    // Initialize all dates in range
+    dateRange.forEach(dateStr => {
+      dailyData.set(dateStr, {
+        displayValue: '-',
+        isRosterLike: false,
+        isTail: false
+      });
+      dateDetails.set(dateStr, {
+        plannedCore: '',
+        plannedSupport: '',
+        ttlLogin: ''
+      });
+    });
+
+    // Populate with actual data
+    empData.dateRecords.forEach((records, dateStr) => {
+      if (!dateRange.includes(dateStr)) return;
+
+      // Use the first record's data (or concatenate if multiple)
+      const primaryRecord = records[0];
+      
+      // Determine display value - prefer task/tail_num
+      let displayValue = primaryRecord.task || primaryRecord.tail_num || '-';
+      
+      // If we have multiple records with different tails, concatenate them
+      if (records.length > 1) {
+        const allTails = records
+          .map(r => r.tail_num || r.task)
+          .filter(Boolean)
+          .filter((v, i, arr) => arr.indexOf(v) === i); // Unique values
+        
+        if (allTails.length > 1) {
+          displayValue = allTails.join('/ ');
+        }
+      }
+
+      // Classify the display value
+      const trimmedValue = displayValue.trim();
+      const isRoster = isRosterLike(trimmedValue);
+      const isTail = !isRoster && isTailNumber(trimmedValue);
+
+      dailyData.set(dateStr, {
+        displayValue: trimmedValue || '-',
+        isRosterLike: isRoster,
+        isTail: isTail,
+        rosterCode: isRoster ? trimmedValue : undefined,
+        employeeTrainings: primaryRecord.expired_trainings || undefined
+      });
+
+      dateDetails.set(dateStr, {
+        plannedCore: primaryRecord.planned_core || '',
+        plannedSupport: primaryRecord.planned_support || '',
+        ttlLogin: '' // Scenario RPC doesn't provide TTL login
+      });
+    });
+
+    // Get most common planned core/support for the employee row (for default display)
+    let mostCommonCore = '';
+    let mostCommonSupport = '';
+    const coreCount = new Map<string, number>();
+    const supportCount = new Map<string, number>();
+
+    dateDetails.forEach(details => {
+      if (details.plannedCore) {
+        coreCount.set(details.plannedCore, (coreCount.get(details.plannedCore) || 0) + 1);
+      }
+      if (details.plannedSupport) {
+        supportCount.set(details.plannedSupport, (supportCount.get(details.plannedSupport) || 0) + 1);
+      }
+    });
+
+    let maxCore = 0;
+    coreCount.forEach((count, value) => {
+      if (count > maxCore) {
+        maxCore = count;
+        mostCommonCore = value;
+      }
+    });
+
+    let maxSupport = 0;
+    supportCount.forEach((count, value) => {
+      if (count > maxSupport) {
+        maxSupport = count;
+        mostCommonSupport = value;
+      }
+    });
+
+    gridRows.push({
+      empId: empData.id,
+      name: empData.name,
+      team: empData.team,
+      role: empData.title || 'ENGR',
+      plannedCore: mostCommonCore,
+      plannedSupport: mostCommonSupport,
+      ttlLogin: '',
+      dailyData,
+      dateDetails
+    });
+  });
+
+  // Sort by employee name
+  gridRows.sort((a, b) => a.name.localeCompare(b.name));
+
+  return gridRows;
+}

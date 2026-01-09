@@ -26,6 +26,7 @@ import { EmployeeDetailDrawer } from './EmployeeDetailDrawer';
 import {
   CURRENT_DATE,
   initializeWorkforcePlanning,
+  loadScenarioData,
   formatDateForHeader,
   formatDateForDetailsHeader,
   getDateZone,
@@ -170,6 +171,7 @@ export function WorkforcePlanning() {
     // Settings popup state for Active Scenario
     const [showSettingsPopup, setShowSettingsPopup] = useState(false);
     const [activeScenario, setActiveScenario] = useState<string>('');
+    const [isLoadingScenario, setIsLoadingScenario] = useState(false);
     const [savedScenarios, setSavedScenarios] = useState<Array<{
       id: string;
       scenario_name: string;
@@ -383,6 +385,44 @@ export function WorkforcePlanning() {
     } finally {
       setIsLoading(false);
     }
+  }
+
+  // Load scenario-specific data when "Set Active" is clicked
+  async function loadScenarioGridData(scenarioId: string) {
+    // Find the scenario to get its name
+    const scenario = savedScenarios.find(s => s.id === scenarioId);
+    if (!scenario) {
+      console.error('Scenario not found:', scenarioId);
+      return;
+    }
+
+    const scenarioName = scenario.scenario_name;
+    console.log('[Scenario] Activating scenario:', scenarioName);
+
+    setIsLoadingScenario(true);
+    setError(null);
+
+    try {
+      const { gridData: data, dateRange: dates } = await loadScenarioData(scenarioName, CURRENT_DATE);
+      setGridData(data);
+      setDateRange(dates);
+
+      // Calculate utilization KPIs based on scenario data
+      calculateUtilization(data, dates, selectedDate);
+
+      console.log('[Scenario] Successfully loaded scenario data:', scenarioName);
+    } catch (err) {
+      console.error('Failed to load scenario data:', err);
+      setError(`Failed to load scenario "${scenarioName}". Please try again.`);
+    } finally {
+      setIsLoadingScenario(false);
+    }
+  }
+
+  // Clear active scenario and reload default data
+  async function clearActiveScenario() {
+    setActiveScenario('');
+    await loadData();
   }
 
   // Recalculate utilization when selected date changes
@@ -1395,10 +1435,15 @@ export function WorkforcePlanning() {
     return count;
   }, [alerts, recommendationStates]);
 
-  if (isLoading) {
+  if (isLoading || isLoadingScenario) {
     return (
-      <div className="flex items-center justify-center h-96">
+      <div className="flex flex-col items-center justify-center h-96 gap-4">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        {isLoadingScenario && (
+          <p className="text-slate-600 font-medium">
+            Loading scenario data...
+          </p>
+        )}
       </div>
     );
   }
@@ -2632,22 +2677,48 @@ export function WorkforcePlanning() {
               </div>
 
               {/* Set Active Button */}
-              <div className="flex justify-center">
+              <div className="flex justify-center gap-3">
                 <button
-                  onClick={() => {
-                    // Close the popup - activeScenario is now set
-                    setShowSettingsPopup(false);
+                  onClick={async () => {
+                    if (activeScenario) {
+                      // Load scenario data and close popup
+                      await loadScenarioGridData(activeScenario);
+                      setShowSettingsPopup(false);
+                    }
                   }}
-                  disabled={!activeScenario}
+                  disabled={!activeScenario || isLoadingScenario}
                   className={`flex items-center gap-2 px-6 py-3 rounded-full font-semibold shadow-md transition ${
-                    activeScenario 
+                    activeScenario && !isLoadingScenario
                       ? 'bg-teal-500 hover:bg-teal-600 text-white cursor-pointer' 
                       : 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   }`}
                 >
-                  <Play className="w-4 h-4" />
-                  Set Active
+                  {isLoadingScenario ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Loading...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" />
+                      Set Active
+                    </>
+                  )}
                 </button>
+                {/* Clear Active Scenario Button */}
+                {activeScenario && (
+                  <button
+                    onClick={async () => {
+                      await clearActiveScenario();
+                      setShowSettingsPopup(false);
+                    }}
+                    disabled={isLoadingScenario}
+                    className="flex items-center gap-2 px-4 py-3 rounded-full font-semibold border-2 border-gray-300 text-gray-600 hover:bg-gray-100 transition"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Clear
+                  </button>
+                )}
               </div>
             </div>
           </div>
