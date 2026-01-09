@@ -1613,6 +1613,10 @@ interface ScenarioRosterRow {
  * Load workforce planning data for a specific scenario
  * Uses get_roster_with_scenario_overrides_with_trainings RPC to fetch scenario-specific roster data
  * 
+ * IMPORTANT: The scenario RPC only returns data for May 1+ (future dates).
+ * For the planning date (April 30) and before, we need to fetch from planning_master_fn_v2
+ * and merge the results.
+ * 
  * @param scenarioName - The name of the scenario to load
  * @param currentDate - The reference "today" date (defaults to CURRENT_DATE)
  * @returns Grid data and date range for the scenario
@@ -1635,20 +1639,83 @@ export async function loadScenarioData(
   const winEndDate = getWindowEndDate(currentDate);
   const dateRange = getDateRange(winStartDate, winEndDate);
 
-  // Fetch scenario roster data from RPC
-  const { data: scenarioData, error: scenarioError } = await supabase
-    .rpc('get_roster_with_scenario_overrides_with_trainings', { p_scenario_name: scenarioName })
-    .limit(100000);
+  // Normalize the planning date
+  const normalizedPlanningDate = currentDate; // e.g., '2022-04-30'
 
-  if (scenarioError) {
-    console.error('[Scenario] Error loading scenario data:', scenarioError);
-    throw new Error(`Failed to load scenario: ${scenarioError.message}`);
+  // Fetch BOTH scenario data AND planning_master_fn_v2 data in parallel
+  // The scenario RPC only returns May 1+ data, so we need planning_master_fn_v2 for April 30 and before
+  const [scenarioResult, planningMasterResult] = await Promise.all([
+    // Scenario RPC - returns May 1+ data with scenario overrides
+    supabase
+      .rpc('get_roster_with_scenario_overrides_with_trainings', { p_scenario_name: scenarioName })
+      .limit(100000),
+    // Planning master - returns data for planning date (April 30) and before
+    // Using planning_master_fn_v2 (same as default loading) for consistency
+    supabase
+      .rpc('planning_master_fn_v2', {
+        p_curr_date: normalizedPlanningDate,
+        p_win_start: winStartDate,
+        p_win_end: normalizedPlanningDate  // Only fetch up to planning date (April 30)
+      })
+  ]);
+
+  if (scenarioResult.error) {
+    console.error('[Scenario] Error loading scenario data:', scenarioResult.error);
+    throw new Error(`Failed to load scenario: ${scenarioResult.error.message}`);
   }
 
-  console.log(`[Scenario] Loaded ${(scenarioData || []).length} rows for scenario: ${scenarioName}`);
+  const scenarioData = (scenarioResult.data || []) as ScenarioRosterRow[];
+  console.log(`[Scenario] Loaded ${scenarioData.length} rows from scenario RPC for: ${scenarioName}`);
 
-  // Transform scenario data into WorkforceGridRow format
-  const gridData = processScenarioData(scenarioData as ScenarioRosterRow[], dateRange, currentDate);
+  // Process planning_master_fn_v2 data for dates <= planning date
+  const planningMasterRows: ScenarioRosterRow[] = [];
+  if (planningMasterResult.data && !planningMasterResult.error) {
+    console.log(`[Scenario] Loaded ${planningMasterResult.data.length} rows from planning_master_fn_v2 for dates <= ${normalizedPlanningDate}`);
+    
+    (planningMasterResult.data as PlanningMasterRecord[]).forEach((row: PlanningMasterRecord) => {
+      if (row.id) {
+        const rosterEntry = row.roster_entry || '';
+        const actualTask = row.actual_task || '';
+        // Use actual_task if available, otherwise roster_entry
+        const displayTask = actualTask || rosterEntry;
+        
+        // Check if it's a tail number
+        const isTailValue = isTailNumber(displayTask);
+        
+        planningMasterRows.push({
+          id: row.id,
+          name: row.name || row.id,
+          team: row.team || '',
+          title: row.title || 'ENGR',
+          date: row.date,
+          tail_num: isTailValue ? displayTask : null,
+          task: displayTask,
+          planned_core: row.planned_core || '',
+          planned_support: row.planned_support || '',
+          bay: null,
+          expired_trainings: row.expired_trainings || null,
+        });
+      }
+    });
+    console.log(`[Scenario] Created ${planningMasterRows.length} rows from planning_master_fn_v2`);
+  } else if (planningMasterResult.error) {
+    console.warn('[Scenario] Error calling planning_master_fn_v2:', planningMasterResult.error);
+  }
+
+  // Filter scenario data to only include dates AFTER planning date (May 1+)
+  // This avoids duplicate data for the planning date
+  const futureScenarioRows = scenarioData.filter(row => {
+    const dateStr = normalizeDateToString(row.date);
+    return dateStr && dateStr > normalizedPlanningDate;
+  });
+  console.log(`[Scenario] After filtering: ${futureScenarioRows.length} future rows from scenario RPC (removed ${scenarioData.length - futureScenarioRows.length} planning date rows)`);
+
+  // Merge: planning_master_fn_v2 data (for dates <= April 30) + scenario data (for May 1+)
+  const mergedData = [...planningMasterRows, ...futureScenarioRows];
+  console.log(`[Scenario] Total merged rows: ${mergedData.length} (${planningMasterRows.length} from planning_master_fn_v2 + ${futureScenarioRows.length} from scenario RPC)`);
+
+  // Transform merged data into WorkforceGridRow format
+  const gridData = processScenarioData(mergedData, dateRange, currentDate);
 
   console.log(`[Scenario] Processed ${gridData.length} employees for scenario: ${scenarioName}`);
 
